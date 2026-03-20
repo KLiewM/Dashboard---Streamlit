@@ -12,7 +12,7 @@ from plotly.subplots import make_subplots
 from pathlib import Path
 
 # ─── Page config ───────────────────────────────────────────────────────────
-st.set_page_config(page_title="Oil Barrel Dashboard Test test test", layout="wide", page_icon="🛢️")
+st.set_page_config(page_title="Oil Barrel Dashboard", layout="wide", page_icon="🛢️")
 
 # ─── Custom CSS ────────────────────────────────────────────────────────────
 st.markdown("""
@@ -54,7 +54,7 @@ for c in columns:
 # ─── Sidebar controls ─────────────────────────────────────────────────────
 with st.sidebar:
     st.image("https://img.icons8.com/fluency/96/oil-industry.png", width=60)
-    st.title("🛢️ Oil Barrel Test est")
+    st.title("🛢️ Oil Barrel")
     st.markdown("---")
 
     view_mode = st.radio("📊 View Mode", [
