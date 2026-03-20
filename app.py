@@ -54,7 +54,7 @@ for c in columns:
 # ─── Sidebar controls ─────────────────────────────────────────────────────
 with st.sidebar:
     st.image("https://img.icons8.com/fluency/96/oil-industry.png", width=60)
-    st.title("🛢️ Oil Barrel")
+    st.title("METS Analytics Dashboard (In Development)")
     st.markdown("---")
 
     view_mode = st.radio("📊 View Mode", [
