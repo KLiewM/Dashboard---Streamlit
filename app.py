@@ -271,6 +271,11 @@ elif view_mode == "Seasonality":
 
     if show_range and len(range_years) >= 2:
         agg = range_df.groupby("DayOfYear")[col_name].agg(["min", "max"]).reset_index()
+        # Reindex to continuous 1–365 and interpolate to remove weekend gaps / stripes
+        full_days = pd.DataFrame({"DayOfYear": range(1, 366)})
+        agg = full_days.merge(agg, on="DayOfYear", how="left")
+        agg["min"] = agg["min"].interpolate(method="linear")
+        agg["max"] = agg["max"].interpolate(method="linear")
         agg["MonthDay"] = pd.to_datetime("2000-01-01") + pd.to_timedelta(agg["DayOfYear"] - 1, unit="D")
         fig.add_trace(go.Scatter(
             x=agg["MonthDay"], y=agg["max"], mode="lines",
@@ -285,6 +290,9 @@ elif view_mode == "Seasonality":
 
     if show_avg and len(range_years) >= 2:
         avg = range_df.groupby("DayOfYear")[col_name].mean().reset_index()
+        full_days = pd.DataFrame({"DayOfYear": range(1, 366)})
+        avg = full_days.merge(avg, on="DayOfYear", how="left")
+        avg[col_name] = avg[col_name].interpolate(method="linear")
         avg["MonthDay"] = pd.to_datetime("2000-01-01") + pd.to_timedelta(avg["DayOfYear"] - 1, unit="D")
         fig.add_trace(go.Scatter(
             x=avg["MonthDay"], y=avg[col_name], name="5Y Average",
@@ -406,6 +414,10 @@ elif view_mode == "Inter-Crude Spreads":
     range_df = ck_df[ck_df["Year"].isin(years)]
     range_df["DayOfYear"] = range_df["Date"].dt.dayofyear
     agg = range_df.groupby("DayOfYear")["Spread"].agg(["min", "max"]).reset_index()
+    full_days = pd.DataFrame({"DayOfYear": range(1, 366)})
+    agg = full_days.merge(agg, on="DayOfYear", how="left")
+    agg["min"] = agg["min"].interpolate(method="linear")
+    agg["max"] = agg["max"].interpolate(method="linear")
     agg["MonthDay"] = pd.to_datetime("2000-01-01") + pd.to_timedelta(agg["DayOfYear"] - 1, unit="D")
     fig4.add_trace(go.Scatter(x=agg["MonthDay"], y=agg["max"], mode="lines",
                               line=dict(width=0), showlegend=False, hoverinfo="skip"))
