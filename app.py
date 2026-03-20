@@ -12,7 +12,7 @@ from plotly.subplots import make_subplots
 from pathlib import Path
 
 # ─── Page config ───────────────────────────────────────────────────────────
-st.set_page_config(page_title="Oil Barrel Dashboard", layout="wide", page_icon="🛢️")
+st.set_page_config(page_title="Oil Barrel Dashboard Test test test", layout="wide", page_icon="🛢️")
 
 # ─── Custom CSS ────────────────────────────────────────────────────────────
 st.markdown("""
