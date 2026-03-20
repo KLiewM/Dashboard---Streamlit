@@ -1,8 +1,9 @@
 """
-Oil Barrel Price Dashboard
+Crude Oil Price Dashboard
 --------------------------
-Reads historical oil product prices from Excel and presents interactive
-seasonality, spread, crack, and seasonal forecast charts via Streamlit + Plotly.
+Reads historical crude oil prices from Excel (crude clean sheet) and presents
+interactive price history, seasonality, spread, inter-crude spread, and calendar
+charts via Streamlit + Plotly.
 """
 import streamlit as st
 import pandas as pd
@@ -10,35 +11,91 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pathlib import Path
+import datetime
 
 # ─── Page config ───────────────────────────────────────────────────────────
-st.set_page_config(page_title="Oil Barrel Dashboard", layout="wide", page_icon="🛢️")
+st.set_page_config(page_title="Crude Oil Dashboard", layout="wide", page_icon="🛢️")
 
-# ─── Custom CSS ────────────────────────────────────────────────────────────
+# ─── Custom CSS — white / light theme ─────────────────────────────────────
 st.markdown("""
 <style>
-    [data-testid="stSidebar"] { background-color: #0E1B2A; }
-    [data-testid="stSidebar"] * { color: #E0E0E0 !important; }
-    .stMetric { background: linear-gradient(135deg, #1B3A5C, #0E1B2A);
-                padding: 12px 16px; border-radius: 10px; border: 1px solid #2A5580; }
-    div[data-testid="stMetricValue"] { color: #4FC3F7 !important; font-size: 1.3rem !important; }
-    div[data-testid="stMetricLabel"] { color: #90CAF9 !important; }
-    .block-container { padding-top: 1.5rem; }
-    h1, h2, h3 { color: #E0E0E0; }
+    /* Sidebar */
+    [data-testid="stSidebar"] { background-color: #F5F7FA; }
+    [data-testid="stSidebar"] * { color: #1E293B !important; }
+
+    /* Main area */
+    .stApp { background-color: #FFFFFF; }
+    .block-container { padding-top: 1.2rem; }
+    h1, h2, h3 { color: #1E293B; }
+    p, span, label, div { color: #334155; }
+
+    /* KPI metrics */
+    .stMetric {
+        background: linear-gradient(135deg, #F8FAFC, #EEF2F7);
+        padding: 10px 14px; border-radius: 10px;
+        border: 1px solid #E2E8F0;
+    }
+    div[data-testid="stMetricValue"] { color: #0F172A !important; font-size: 1.15rem !important; }
+    div[data-testid="stMetricLabel"] { color: #64748B !important; font-size: 0.85rem !important; }
+    div[data-testid="stMetricDelta"] > div { font-size: 0.8rem !important; }
+
+    /* M1–M12 banner */
+    .tenor-banner {
+        display: flex; flex-wrap: wrap; gap: 8px;
+        padding: 12px 0; margin-bottom: 8px;
+    }
+    .tenor-card {
+        flex: 1 1 0; min-width: 80px; max-width: 120px;
+        background: #F1F5F9; border: 1px solid #E2E8F0;
+        border-radius: 8px; padding: 8px 10px; text-align: center;
+    }
+    .tenor-card .label { font-size: 0.7rem; color: #94A3B8; font-weight: 600; }
+    .tenor-card .price { font-size: 0.95rem; color: #0F172A; font-weight: 700; }
+    .tenor-card .chg-up   { font-size: 0.72rem; color: #16A34A; }
+    .tenor-card .chg-down { font-size: 0.72rem; color: #DC2626; }
 </style>
 """, unsafe_allow_html=True)
 
 # ─── Load data ─────────────────────────────────────────────────────────────
-DATA_FILE = Path(__file__).parent / "oil_barrel_prices.xlsx"
+DATA_FILE = Path(__file__).parent / "pricescrossbarrel_-_Crude_ONLY.xlsx"
+
+PRODUCT_MAP = {
+    "Brent":  "ICE BRENT CRUDE",
+    "WTI":    "NYMEX WTI CRUDE",
+    "Dubai":  "ICE DUBAI CRUDE",
+}
+PRODUCTS = list(PRODUCT_MAP.keys())
+TENORS = [f"M{i}" for i in range(1, 13)]
+
 
 @st.cache_data(ttl=3600)
 def load_data(path: str) -> pd.DataFrame:
-    df = pd.read_excel(path, sheet_name="Prices")
-    df["Date"] = pd.to_datetime(df["Date"])
+    raw = pd.read_excel(path, sheet_name="crude clean", header=None, skiprows=1)
+    headers = raw.iloc[0].tolist()
+    raw = raw.iloc[1:].reset_index(drop=True)
+    raw.columns = headers
+    raw["Date"] = pd.to_datetime(raw["Date"], errors="coerce")
+    raw = raw.dropna(subset=["Date"]).reset_index(drop=True)
+
+    # Normalise column names to "Product|Tenor" format
+    df = pd.DataFrame({"Date": raw["Date"]})
+    for short, prefix in PRODUCT_MAP.items():
+        for t in TENORS:
+            src = f"{prefix} {t}"
+            dst = f"{short}|{t}"
+            if src in raw.columns:
+                vals = pd.to_numeric(raw[src], errors="coerce")
+                vals = vals.replace(0, np.nan)
+                df[dst] = vals
+
+    # Drop rows where all price columns are NaN
+    price_cols = [c for c in df.columns if c != "Date"]
+    df = df.dropna(subset=price_cols, how="all").reset_index(drop=True)
     return df
 
+
 if not DATA_FILE.exists():
-    st.error(f"Data file not found at `{DATA_FILE}`. Run `python generate_data.py` first.")
+    st.error(f"Data file not found at `{DATA_FILE}`.")
     st.stop()
 
 df = load_data(str(DATA_FILE))
@@ -54,101 +111,109 @@ for c in columns:
 # ─── Sidebar controls ─────────────────────────────────────────────────────
 with st.sidebar:
     st.image("https://img.icons8.com/fluency/96/oil-industry.png", width=60)
-    st.title("METS Analytics Dashboard hello (In Development)")
+    st.title("Crude Oil Dashboard")
     st.markdown("---")
 
     view_mode = st.radio("📊 View Mode", [
         "Price History",
         "Seasonality",
         "Spreads (M1–M2, etc.)",
-        "Cracks (Product – Crude)",
-        "Seasonal Forecast"
+        "Inter-Crude Spreads",
+        "📅 Calendar",
     ])
 
     st.markdown("---")
-    st.subheader("Product Selection")
-    selected_product = st.selectbox("Product", products)
-    available_tenors = tenors_map.get(selected_product, ["Spot"])
 
-    if view_mode == "Price History":
-        selected_tenors = st.multiselect("Tenors", available_tenors, default=["Spot", "M1"])
-    elif view_mode == "Seasonality":
-        selected_tenor_season = st.selectbox("Tenor", available_tenors, index=0)
-        current_year = df["Date"].dt.year.max()
-        all_years = sorted(df["Date"].dt.year.unique(), reverse=True)
-        default_years = [y for y in all_years[:5]]
-        selected_years = st.multiselect("Compare Years", all_years, default=default_years)
-        show_range = st.checkbox("Show 5-Year Min/Max Range", value=True)
-        show_avg = st.checkbox("Show 5-Year Average", value=True)
-    elif view_mode == "Spreads (M1–M2, etc.)":
-        spread_tenors = [t for t in available_tenors if t.startswith("M")]
-        col1, col2 = st.columns(2)
-        with col1:
-            front_tenor = st.selectbox("Front", spread_tenors, index=0)
-        with col2:
-            back_idx = min(1, len(spread_tenors) - 1)
-            back_tenor = st.selectbox("Back", spread_tenors, index=back_idx)
-    elif view_mode == "Cracks (Product – Crude)":
-        crack_product = st.selectbox("Product (numerator)", [p for p in products if "Brent" not in p and "WTI" not in p])
-        crack_crude = st.selectbox("Crude (denominator)", ["Brent", "WTI"])
-        crack_tenor = st.selectbox("Tenor", ["Spot", "M1", "M2", "M3", "Q1", "Q2"])
-    elif view_mode == "Seasonal Forecast":
-        forecast_products = st.multiselect(
-            "Products to forecast",
-            products,
-            default=["Brent"],
-            help="Pick one or more products to compare."
-        )
-        forecast_tenor = st.selectbox("Tenor", ["Spot", "M1", "M2", "M3"], index=0)
-        forecast_horizon = st.select_slider(
-            "Forecast horizon",
-            options=["3M", "6M", "12M"],
-            value="6M",
-        )
+    if view_mode != "📅 Calendar":
+        st.subheader("Product Selection")
+        selected_product = st.selectbox("Product", products)
+        available_tenors = tenors_map.get(selected_product, TENORS)
+
+        if view_mode == "Price History":
+            selected_tenors = st.multiselect("Tenors", available_tenors, default=["M1", "M2"])
+        elif view_mode == "Seasonality":
+            selected_tenor_season = st.selectbox("Tenor", available_tenors, index=0)
+            current_year = df["Date"].dt.year.max()
+            all_years = sorted(df["Date"].dt.year.unique(), reverse=True)
+            default_years = [y for y in all_years[:5]]
+            selected_years = st.multiselect("Compare Years", all_years, default=default_years)
+            show_range = st.checkbox("Show 5-Year Min/Max Range", value=True)
+            show_avg = st.checkbox("Show 5-Year Average", value=True)
+        elif view_mode == "Spreads (M1–M2, etc.)":
+            spread_tenors = [t for t in available_tenors if t.startswith("M")]
+            col1, col2 = st.columns(2)
+            with col1:
+                front_tenor = st.selectbox("Front", spread_tenors, index=0)
+            with col2:
+                back_idx = min(1, len(spread_tenors) - 1)
+                back_tenor = st.selectbox("Back", spread_tenors, index=back_idx)
+        elif view_mode == "Inter-Crude Spreads":
+            crude_a = st.selectbox("Crude A", products, index=0)
+            crude_b = st.selectbox("Crude B", [p for p in products if p != crude_a], index=0)
+            spread_tenor = st.selectbox("Tenor", TENORS, index=0)
 
     st.markdown("---")
-    st.caption("Data: Dummy generated · Updated daily")
+    st.caption("Data: crude clean sheet · Brent / WTI / Dubai")
 
 # ─── Plotting helpers ──────────────────────────────────────────────────────
-COLORS = ["#4FC3F7", "#FF8A65", "#81C784", "#BA68C8", "#FFD54F", "#E57373",
-          "#4DB6AC", "#7986CB", "#A1887F", "#90A4AE"]
+COLORS = ["#2563EB", "#DC2626", "#16A34A", "#D97706", "#7C3AED", "#DB2777",
+          "#0891B2", "#4F46E5", "#B45309", "#64748B"]
+
 
 def style_fig(fig, title="", height=560):
     fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(14,27,42,0.6)",
-        title=dict(text=title, font=dict(size=18, color="#E0E0E0"), x=0.02),
-        legend=dict(bgcolor="rgba(0,0,0,0.3)", font=dict(size=11)),
+        template="plotly_white",
+        paper_bgcolor="rgba(255,255,255,0)",
+        plot_bgcolor="rgba(248,250,252,1)",
+        title=dict(text=title, font=dict(size=17, color="#1E293B"), x=0.02),
+        legend=dict(bgcolor="rgba(255,255,255,0.8)", font=dict(size=11, color="#334155")),
         height=height,
         margin=dict(l=50, r=30, t=50, b=50),
         hovermode="x unified",
-        xaxis=dict(gridcolor="rgba(255,255,255,0.08)", showgrid=True),
-        yaxis=dict(gridcolor="rgba(255,255,255,0.08)", showgrid=True,
+        xaxis=dict(gridcolor="rgba(0,0,0,0.06)", showgrid=True),
+        yaxis=dict(gridcolor="rgba(0,0,0,0.06)", showgrid=True,
                    title="$/bbl", tickformat=",.1f"),
     )
     return fig
+
 
 def hex_to_rgba(hex_color, alpha):
     h = hex_color.lstrip("#")
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f"rgba({r},{g},{b},{alpha})"
 
-# ─── Main content area ────────────────────────────────────────────────────
-if view_mode != "Seasonal Forecast":
+
+# ─── M1–M12 Banner at the top ─────────────────────────────────────────────
+if view_mode != "📅 Calendar":
     st.markdown(f"## {selected_product}")
 
     latest = df.iloc[-1]
     prev = df.iloc[-2]
-    kpi_cols = st.columns(5)
-    show_tenors = ["Spot", "M1", "M3", "M6", "M12"]
-    for i, t in enumerate(show_tenors):
-        col_name = f"{selected_product}|{t}"
-        if col_name in df.columns:
-            val = latest[col_name]
-            chg = val - prev[col_name]
-            kpi_cols[i].metric(t, f"${val:,.2f}", f"{chg:+.2f}")
 
+    cards_html = '<div class="tenor-banner">'
+    for t in TENORS:
+        col_name = f"{selected_product}|{t}"
+        if col_name in df.columns and pd.notna(latest[col_name]):
+            val = latest[col_name]
+            chg = val - prev[col_name] if pd.notna(prev[col_name]) else 0
+            chg_cls = "chg-up" if chg >= 0 else "chg-down"
+            chg_sign = "+" if chg >= 0 else ""
+            cards_html += (
+                f'<div class="tenor-card">'
+                f'<div class="label">{t}</div>'
+                f'<div class="price">${val:,.2f}</div>'
+                f'<div class="{chg_cls}">{chg_sign}{chg:.2f}</div>'
+                f'</div>'
+            )
+        else:
+            cards_html += (
+                f'<div class="tenor-card">'
+                f'<div class="label">{t}</div>'
+                f'<div class="price" style="color:#94A3B8;">—</div>'
+                f'</div>'
+            )
+    cards_html += '</div>'
+    st.markdown(cards_html, unsafe_allow_html=True)
     st.markdown("---")
 
 # ═══ VIEW: Price History ═══════════════════════════════════════════════════
@@ -169,9 +234,8 @@ if view_mode == "Price History":
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### Forward Curve (Latest)")
-    m_tenors = [f"M{i}" for i in range(1, 13)]
     curve_vals = []
-    for t in m_tenors:
+    for t in TENORS:
         c = f"{selected_product}|{t}"
         if c in df.columns:
             curve_vals.append(latest[c])
@@ -180,10 +244,10 @@ if view_mode == "Price History":
 
     fig2 = go.Figure()
     fig2.add_trace(go.Scatter(
-        x=m_tenors, y=curve_vals, mode="lines+markers",
-        line=dict(color="#4FC3F7", width=3),
-        marker=dict(size=8, color="#4FC3F7"),
-        fill="tozeroy", fillcolor="rgba(79,195,247,0.1)"
+        x=TENORS, y=curve_vals, mode="lines+markers",
+        line=dict(color="#2563EB", width=3),
+        marker=dict(size=8, color="#2563EB"),
+        fill="tozeroy", fillcolor="rgba(37,99,235,0.07)"
     ))
     style_fig(fig2, f"{selected_product} — Forward Curve", height=350)
     fig2.update_layout(xaxis_title="Contract Month")
@@ -196,7 +260,7 @@ elif view_mode == "Seasonality":
         st.error(f"Column {col_name} not found.")
         st.stop()
 
-    sub = df[["Date", col_name]].copy()
+    sub = df[["Date", col_name]].dropna(subset=[col_name]).copy()
     sub["Year"] = sub["Date"].dt.year
     sub["DayOfYear"] = sub["Date"].dt.dayofyear
     sub["MonthDay"] = sub["Date"].apply(lambda d: d.replace(year=2000))
@@ -215,7 +279,7 @@ elif view_mode == "Seasonality":
         fig.add_trace(go.Scatter(
             x=agg["MonthDay"], y=agg["min"], mode="lines",
             line=dict(width=0), fill="tonexty",
-            fillcolor="rgba(79,195,247,0.12)",
+            fillcolor="rgba(37,99,235,0.08)",
             name=f"{range_years[0]}–{range_years[-1]} Range",
         ))
 
@@ -224,7 +288,7 @@ elif view_mode == "Seasonality":
         avg["MonthDay"] = pd.to_datetime("2000-01-01") + pd.to_timedelta(avg["DayOfYear"] - 1, unit="D")
         fig.add_trace(go.Scatter(
             x=avg["MonthDay"], y=avg[col_name], name="5Y Average",
-            line=dict(color="#FFFFFF", width=2, dash="dash"),
+            line=dict(color="#94A3B8", width=2, dash="dash"),
         ))
 
     for i, year in enumerate(sorted(selected_years)):
@@ -267,13 +331,13 @@ elif view_mode == "Spreads (M1–M2, etc.)":
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.65, 0.35],
                         vertical_spacing=0.06)
     fig.add_trace(go.Scatter(x=df["Date"], y=df[front_col], name=front_tenor,
-                             line=dict(color="#4FC3F7", width=2)), row=1, col=1)
+                             line=dict(color="#2563EB", width=2)), row=1, col=1)
     fig.add_trace(go.Scatter(x=df["Date"], y=df[back_col], name=back_tenor,
-                             line=dict(color="#FF8A65", width=2)), row=1, col=1)
-    colors = ["#81C784" if v >= 0 else "#E57373" for v in spread]
+                             line=dict(color="#DC2626", width=2)), row=1, col=1)
+    colors = ["#16A34A" if v >= 0 else "#DC2626" for v in spread]
     fig.add_trace(go.Bar(x=df["Date"], y=spread, name="Spread",
                          marker_color=colors, opacity=0.7), row=2, col=1)
-    fig.add_hline(y=0, line_dash="dot", line_color="white", opacity=0.4, row=2, col=1)
+    fig.add_hline(y=0, line_dash="dot", line_color="#94A3B8", opacity=0.6, row=2, col=1)
 
     style_fig(fig, f"{spread_name} Spread", height=620)
     fig.update_yaxes(title_text="$/bbl", row=1, col=1)
@@ -282,6 +346,7 @@ elif view_mode == "Spreads (M1–M2, etc.)":
 
     st.markdown("### Spread Seasonality")
     sp_df = pd.DataFrame({"Date": df["Date"], "Spread": spread})
+    sp_df = sp_df.dropna(subset=["Spread"])
     sp_df["Year"] = sp_df["Date"].dt.year
     sp_df["MonthDay"] = sp_df["Date"].apply(lambda d: d.replace(year=2000))
 
@@ -297,35 +362,36 @@ elif view_mode == "Spreads (M1–M2, etc.)":
                                    range=["2000-01-01", "2000-12-31"]))
     st.plotly_chart(fig3, use_container_width=True)
 
-# ═══ VIEW: Cracks ══════════════════════════════════════════════════════════
-elif view_mode == "Cracks (Product – Crude)":
-    prod_col = f"{crack_product}|{crack_tenor}"
-    crude_col = f"{crack_crude}|{crack_tenor}"
-    if prod_col not in df.columns or crude_col not in df.columns:
-        st.error(f"Columns not found: {prod_col} or {crude_col}")
+# ═══ VIEW: Inter-Crude Spreads ═════════════════════════════════════════════
+elif view_mode == "Inter-Crude Spreads":
+    col_a = f"{crude_a}|{spread_tenor}"
+    col_b = f"{crude_b}|{spread_tenor}"
+    if col_a not in df.columns or col_b not in df.columns:
+        st.error(f"Columns not found: {col_a} or {col_b}")
         st.stop()
 
-    crack = df[prod_col] - df[crude_col]
-    crack_name = f"{crack_product} vs {crack_crude} ({crack_tenor})"
+    crack = df[col_a] - df[col_b]
+    crack_name = f"{crude_a} vs {crude_b} ({spread_tenor})"
 
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.55, 0.45],
                         vertical_spacing=0.06)
-    fig.add_trace(go.Scatter(x=df["Date"], y=df[prod_col], name=crack_product,
-                             line=dict(color="#4FC3F7", width=2)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df["Date"], y=df[crude_col], name=crack_crude,
-                             line=dict(color="#FF8A65", width=2)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df["Date"], y=crack, name="Crack",
-                             line=dict(color="#81C784", width=2),
-                             fill="tozeroy", fillcolor="rgba(129,199,132,0.15)"), row=2, col=1)
-    fig.add_hline(y=0, line_dash="dot", line_color="white", opacity=0.4, row=2, col=1)
+    fig.add_trace(go.Scatter(x=df["Date"], y=df[col_a], name=crude_a,
+                             line=dict(color="#2563EB", width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df["Date"], y=df[col_b], name=crude_b,
+                             line=dict(color="#DC2626", width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df["Date"], y=crack, name="Spread",
+                             line=dict(color="#16A34A", width=2),
+                             fill="tozeroy", fillcolor="rgba(22,163,74,0.10)"), row=2, col=1)
+    fig.add_hline(y=0, line_dash="dot", line_color="#94A3B8", opacity=0.6, row=2, col=1)
 
-    style_fig(fig, f"Crack Spread: {crack_name}", height=620)
+    style_fig(fig, f"Inter-Crude Spread: {crack_name}", height=620)
     fig.update_yaxes(title_text="$/bbl", row=1, col=1)
-    fig.update_yaxes(title_text="Crack $/bbl", row=2, col=1)
+    fig.update_yaxes(title_text="Spread $/bbl", row=2, col=1)
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### Crack Seasonality")
-    ck_df = pd.DataFrame({"Date": df["Date"], "Crack": crack})
+    st.markdown("### Spread Seasonality")
+    ck_df = pd.DataFrame({"Date": df["Date"], "Spread": crack})
+    ck_df = ck_df.dropna(subset=["Spread"])
     ck_df["Year"] = ck_df["Date"].dt.year
     ck_df["MonthDay"] = ck_df["Date"].apply(lambda d: d.replace(year=2000))
 
@@ -334,409 +400,245 @@ elif view_mode == "Cracks (Product – Crude)":
     for i, year in enumerate(years):
         yr = ck_df[ck_df["Year"] == year].sort_values("Date")
         fig4.add_trace(go.Scatter(
-            x=yr["MonthDay"], y=yr["Crack"], name=str(year),
+            x=yr["MonthDay"], y=yr["Spread"], name=str(year),
             line=dict(color=COLORS[i % len(COLORS)], width=2)
         ))
     range_df = ck_df[ck_df["Year"].isin(years)]
     range_df["DayOfYear"] = range_df["Date"].dt.dayofyear
-    agg = range_df.groupby("DayOfYear")["Crack"].agg(["min", "max"]).reset_index()
+    agg = range_df.groupby("DayOfYear")["Spread"].agg(["min", "max"]).reset_index()
     agg["MonthDay"] = pd.to_datetime("2000-01-01") + pd.to_timedelta(agg["DayOfYear"] - 1, unit="D")
     fig4.add_trace(go.Scatter(x=agg["MonthDay"], y=agg["max"], mode="lines",
                               line=dict(width=0), showlegend=False, hoverinfo="skip"))
     fig4.add_trace(go.Scatter(x=agg["MonthDay"], y=agg["min"], mode="lines",
                               line=dict(width=0), fill="tonexty",
-                              fillcolor="rgba(79,195,247,0.10)",
+                              fillcolor="rgba(37,99,235,0.07)",
                               name=f"{years[0]}–{years[-1]} Range"))
 
-    style_fig(fig4, f"Crack Seasonality: {crack_name}", height=400)
+    style_fig(fig4, f"Spread Seasonality: {crack_name}", height=400)
     fig4.update_layout(xaxis=dict(tickformat="%b", dtick="M1",
                                    range=["2000-01-01", "2000-12-31"]))
     st.plotly_chart(fig4, use_container_width=True)
 
-# ═══ VIEW: Seasonal Forecast ══════════════════════════════════════════════
-elif view_mode == "Seasonal Forecast":
+# ═══ VIEW: Calendar ════════════════════════════════════════════════════════
+elif view_mode == "📅 Calendar":
 
-    st.markdown("## Seasonal Price Forecast")
+    st.markdown("## Market Calendar")
 
-    # ── Plain-English model explanation ──
-    st.markdown(
-        "**How this works:** Oil prices follow seasonal patterns — heating fuel "
-        "demand peaks in winter, driving fuel demand rises in summer, and refineries "
-        "go through maintenance cycles. This model takes the **5-year average** of "
-        "what each product does month-by-month, anchors it to today's actual price, "
-        "and projects that path forward. The shaded range shows the **historical "
-        "min–max** over those 5 years — so you can see how wide the actual outcomes "
-        "have been around the seasonal average."
-    )
+    econ_tab, geo_tab = st.tabs(["📊 Economic Calendar", "🌍 Geopolitical Calendar"])
 
-    if not forecast_products:
-        st.warning("Select at least one product from the sidebar.")
-        st.stop()
-
-    # ── Horizon & date setup ──
-    hz_map = {"3M": 63, "6M": 126, "12M": 252}
-    hz_days = hz_map[forecast_horizon]
-
-    current_date = df["Date"].iloc[-1]
-    current_doy = current_date.dayofyear
-    fwd_dates = pd.bdate_range(current_date, periods=hz_days + 1)
-    all_years = sorted(df["Date"].dt.year.unique())
-    range_years = all_years[-5:]
-
-    # ── Compute forecasts ──
-    forecast_results = {}
-
-    for product in forecast_products:
-        col_name = f"{product}|{forecast_tenor}"
-        if col_name not in df.columns:
-            continue
-
-        sub = df[["Date", col_name]].dropna().copy()
-        sub["Year"] = sub["Date"].dt.year
-        sub["DayOfYear"] = sub["Date"].dt.dayofyear
-        current_price = sub[col_name].iloc[-1]
-
-        range_df = sub[sub["Year"].isin(range_years)]
-        seasonal_avg = range_df.groupby("DayOfYear")[col_name].mean()
-        seasonal_min = range_df.groupby("DayOfYear")[col_name].min()
-        seasonal_max = range_df.groupby("DayOfYear")[col_name].max()
-
-        # Smooth out day-to-day noise using circular (wrap-around) rolling average.
-        # Without this, each point is the average of only 5 values (one per year)
-        # which creates a jagged sawtooth pattern. We wrap the series so Dec–Jan
-        # transitions are smooth too.
-        smooth_window = 30
-        def circular_smooth(series, window=smooth_window):
-            padded = pd.concat([series.iloc[-window:], series, series.iloc[:window]])
-            smoothed = padded.rolling(window, center=True, min_periods=5).mean()
-            return smoothed.iloc[window:-window]
-
-        seasonal_avg = circular_smooth(seasonal_avg)
-        seasonal_min = circular_smooth(seasonal_min)
-        seasonal_max = circular_smooth(seasonal_max)
-
-        anchor_avg = seasonal_avg.get(current_doy, current_price)
-        anchor_min = seasonal_min.get(current_doy, current_price)
-        anchor_max = seasonal_max.get(current_doy, current_price)
-
-        fwd_avg, fwd_lo, fwd_hi = [], [], []
-        for d in range(hz_days + 1):
-            future_doy = ((current_doy + d - 1) % 365) + 1
-
-            avg_val = seasonal_avg.get(future_doy, np.nan)
-            min_val = seasonal_min.get(future_doy, np.nan)
-            max_val = seasonal_max.get(future_doy, np.nan)
-
-            if not np.isnan(avg_val) and anchor_avg != 0:
-                fwd_avg.append(current_price * (avg_val / anchor_avg))
-            else:
-                fwd_avg.append(current_price)
-
-            if not np.isnan(min_val) and anchor_min != 0:
-                fwd_lo.append(current_price * (min_val / anchor_min))
-            else:
-                fwd_lo.append(current_price)
-
-            if not np.isnan(max_val) and anchor_max != 0:
-                fwd_hi.append(current_price * (max_val / anchor_max))
-            else:
-                fwd_hi.append(current_price)
-
-        # Final light smooth on output to remove any remaining bumps
-        def smooth_array(arr, w=10):
-            s = pd.Series(arr).rolling(w, center=True, min_periods=3).mean()
-            s.iloc[0] = arr[0]  # keep exact starting price
-            return s.bfill().ffill().values
-
-        forecast_results[product] = {
-            "current": current_price,
-            "fwd_avg": smooth_array(np.array(fwd_avg)),
-            "fwd_lo": smooth_array(np.array(fwd_lo)),
-            "fwd_hi": smooth_array(np.array(fwd_hi)),
-        }
-
-    # ── Summary cards ──
-    summary_cols = st.columns(max(len(forecast_products), 1))
-    for idx, product in enumerate(forecast_products):
-        if product not in forecast_results:
-            continue
-        r = forecast_results[product]
-        end_fc = r["fwd_avg"][-1]
-        chg = end_fc - r["current"]
-        chg_pct = chg / r["current"] * 100
-        direction = "↑" if chg > 0 else "↓"
-
-        with summary_cols[idx]:
-            st.metric(
-                product,
-                f"${r['current']:,.2f} → ${end_fc:,.2f}",
-                f"{direction} {abs(chg_pct):.1f}% ({forecast_horizon})"
-            )
-            st.caption(f"Range: ${r['fwd_lo'][-1]:,.1f} – ${r['fwd_hi'][-1]:,.1f}")
-
-    st.markdown("---")
-
-    # ── Main forecast chart ──
-    st.markdown("### Forecast Chart")
-    st.caption(
-        f"**Solid line** = where prices typically go at this time of year (5-year "
-        f"seasonal average, anchored to today's price). **Shaded area** = the "
-        f"full range of what actually happened in the last 5 years. If the range "
-        f"is wide, the seasonal pattern is less reliable for that product."
-    )
-
-    fig = go.Figure()
-
-    for i, product in enumerate(forecast_products):
-        if product not in forecast_results:
-            continue
-        r = forecast_results[product]
-        color = COLORS[i % len(COLORS)]
-
-        # Range band
-        fig.add_trace(go.Scatter(
-            x=fwd_dates, y=r["fwd_hi"], mode="lines",
-            line=dict(width=0), showlegend=False, hoverinfo="skip",
-        ))
-        fig.add_trace(go.Scatter(
-            x=fwd_dates, y=r["fwd_lo"], mode="lines",
-            line=dict(width=0), fill="tonexty",
-            fillcolor=hex_to_rgba(color, 0.12),
-            name=f"{product} range",
-        ))
-
-        # Forecast line
-        fig.add_trace(go.Scatter(
-            x=fwd_dates, y=r["fwd_avg"],
-            name=f"{product} forecast",
-            line=dict(color=color, width=3),
-        ))
-
-        # Starting dot
-        fig.add_trace(go.Scatter(
-            x=[fwd_dates[0]], y=[r["current"]],
-            mode="markers", showlegend=False,
-            marker=dict(size=9, color=color, symbol="diamond"),
-        ))
-
-        # End label
-        fig.add_annotation(
-            x=fwd_dates[-1], y=r["fwd_avg"][-1],
-            text=f"${r['fwd_avg'][-1]:,.1f}",
-            showarrow=False, font=dict(size=11, color=color),
-            xanchor="left", xshift=8
+    with econ_tab:
+        st.markdown("### Economic Calendar")
+        st.caption(
+            "High-impact events for the US, EU, China, and Japan — "
+            "the four macro territories that drive oil demand and dollar pricing."
         )
 
-    style_fig(fig, "", height=500)
-    fig.update_layout(
-        xaxis_title="",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-    )
-    st.plotly_chart(fig, use_container_width=True)
+        if "te_api_key" not in st.session_state:
+            st.session_state["te_api_key"] = ""
 
-    st.markdown("---")
+        with st.expander(
+            "🔑 Trading Economics API Key",
+            expanded=not bool(st.session_state["te_api_key"])
+        ):
+            key_input = st.text_input(
+                "Paste your API key here",
+                value=st.session_state["te_api_key"],
+                type="password",
+                help=(
+                    "Get a key at tradingeconomics.com/api. "
+                    "Leave blank to use the free guest:guest demo key "
+                    "(returns limited sample data only)."
+                ),
+            )
+            if key_input != st.session_state["te_api_key"]:
+                st.session_state["te_api_key"] = key_input
+                st.rerun()
 
-    # ── Forward Curve Shape ──
-    st.markdown("### Forward Curve Shape")
-    st.markdown(
-        "**What this shows:** The forward curve plots today's price for each future "
-        "delivery month (M1 = next month, M12 = 12 months out). The **shape** tells "
-        "you what the market expects:\n\n"
-        "- **Upward slope (contango):** Later months cost more than near months. "
-        "This usually means the market is well-supplied — there's no urgency to buy now, "
-        "so storage and financing costs get priced into future months.\n"
-        "- **Downward slope (backwardation):** Near months cost more than later months. "
-        "This usually means supply is tight right now — buyers are paying a premium for "
-        "immediate delivery.\n"
-        "- **Flat:** No strong supply/demand imbalance. The market is balanced."
-    )
+        api_key = st.session_state["te_api_key"] or "guest:guest"
 
-    fig_curve = go.Figure()
-    m_labels = [f"M{i}" for i in range(1, 13)]
+        col_f1, col_f2, col_f3 = st.columns([1, 1, 1])
 
-    for i, product in enumerate(forecast_products):
-        if product not in forecast_results:
-            continue
-        color = COLORS[i % len(COLORS)]
-        curve_vals = []
-        for t in m_labels:
-            c = f"{product}|{t}"
-            if c in df.columns:
-                curve_vals.append(df[c].iloc[-1])
-            else:
-                curve_vals.append(np.nan)
+        with col_f1:
+            horizon = st.selectbox(
+                "Horizon",
+                ["Today", "Next 7 Days", "Next 14 Days", "Next Month"],
+                index=1,
+                key="cal_horizon",
+            )
 
-        fig_curve.add_trace(go.Scatter(
-            x=m_labels, y=curve_vals, mode="lines+markers",
-            name=product,
-            line=dict(color=color, width=3),
-            marker=dict(size=7, color=color),
-        ))
+        with col_f2:
+            importance_filter = st.multiselect(
+                "Importance",
+                ["🔴 High (3)", "🟡 Medium (2)", "🟢 Low (1)"],
+                default=["🔴 High (3)", "🟡 Medium (2)"],
+                key="cal_importance",
+            )
 
-    style_fig(fig_curve, "", height=380)
-    fig_curve.update_layout(
-        xaxis_title="Contract Month",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-    )
-    st.plotly_chart(fig_curve, use_container_width=True)
+        with col_f3:
+            country_filter = st.multiselect(
+                "Territory",
+                ["United States", "Euro Area", "China", "Japan"],
+                default=["United States", "Euro Area", "China", "Japan"],
+                key="cal_countries",
+            )
 
-    st.markdown("---")
+        COUNTRY_API_MAP = {
+            "United States": ["united states"],
+            "Euro Area":     ["euro area", "germany", "france"],
+            "China":         ["china"],
+            "Japan":         ["japan"],
+        }
 
-    # ── Momentum Chart ──
-    st.markdown("### Price Momentum")
-    st.markdown(
-        "**What this shows:** The blue line is the actual daily price. The two dashed "
-        "lines are **moving averages** — they smooth out the noise to reveal the trend:\n\n"
-        "- **50-day average (green):** The short-term trend — where prices have been heading "
-        "over roughly the last 2 months.\n"
-        "- **200-day average (orange):** The long-term trend — the general direction over "
-        "roughly the last 10 months.\n\n"
-        "**How to read it:** When the 50-day is **above** the 200-day, the short-term "
-        "trend is stronger than the long-term trend — prices have been rising and "
-        "momentum is upward. When it's **below**, prices have been weakening. This "
-        "doesn't predict the future, but it tells you whether the current price "
-        "movement is with or against the broader trend."
-    )
+        API_TO_TERRITORY = {}
+        for territory, api_list in COUNTRY_API_MAP.items():
+            for api_name in api_list:
+                API_TO_TERRITORY[api_name.lower()] = territory
 
-    n_products = len([p for p in forecast_products if p in forecast_results])
-    if n_products > 0:
-        mom_cols = st.columns(min(n_products, 3))
+        IMPORTANCE_INT   = {"🔴 High (3)": 3, "🟡 Medium (2)": 2, "🟢 Low (1)": 1}
+        IMPORTANCE_LABEL = {3: "🔴 High", 2: "🟡 Medium", 1: "🟢 Low"}
 
-        for idx, product in enumerate(forecast_products):
-            if product not in forecast_results:
-                continue
-            col_name = f"{product}|{forecast_tenor}"
-            if col_name not in df.columns:
-                continue
+        FLAG = {
+            "United States": "🇺🇸",
+            "Euro Area":     "🇪🇺",
+            "China":         "🇨🇳",
+            "Japan":         "🇯🇵",
+        }
 
-            sub = df[["Date", col_name]].dropna().copy()
-            sub["MA50"] = sub[col_name].rolling(50).mean()
-            sub["MA200"] = sub[col_name].rolling(200).mean()
-            tail = sub.tail(252)
+        today     = datetime.date.today()
+        delta_map = {"Today": 0, "Next 7 Days": 7, "Next 14 Days": 14, "Next Month": 30}
+        end_date  = today + datetime.timedelta(days=delta_map[horizon])
+        init_str  = today.strftime("%Y-%m-%d")
+        end_str   = end_date.strftime("%Y-%m-%d")
 
-            ma50_now = tail["MA50"].iloc[-1]
-            ma200_now = tail["MA200"].iloc[-1]
+        selected_importance_ints = [IMPORTANCE_INT[i] for i in importance_filter]
 
-            if ma50_now > ma200_now:
-                signal = "📈 Upward"
-                signal_color = "#81C784"
-            else:
-                signal = "📉 Downward"
-                signal_color = "#E57373"
+        @st.cache_data(ttl=900, show_spinner=False)
+        def fetch_te_calendar(countries_key, init_date, end_date, key):
+            import requests
+            import urllib.parse
+            encoded_countries = urllib.parse.quote(countries_key)
+            url = (
+                f"https://api.tradingeconomics.com/calendar/country/"
+                f"{encoded_countries}/{init_date}/{end_date}"
+                f"?c={key}"
+            )
+            try:
+                resp = requests.get(url, timeout=10)
+                resp.raise_for_status()
+                return resp.json()
+            except requests.exceptions.HTTPError as e:
+                return {"error": f"HTTP {resp.status_code}: {e}"}
+            except Exception as e:
+                return {"error": str(e)}
 
-            with mom_cols[idx % 3]:
-                st.markdown(f"**{product}** — Momentum: "
-                            f"<span style='color:{signal_color}'>{signal}</span>",
-                            unsafe_allow_html=True)
-                st.caption(f"50d: ${ma50_now:,.2f}  |  200d: ${ma200_now:,.2f}")
+        api_countries = []
+        for territory in country_filter:
+            for api_name in COUNTRY_API_MAP.get(territory, [territory.lower()]):
+                if api_name not in api_countries:
+                    api_countries.append(api_name)
 
-                fig_mom = go.Figure()
-                fig_mom.add_trace(go.Scatter(
-                    x=tail["Date"], y=tail[col_name],
-                    name="Price", line=dict(color="#4FC3F7", width=2),
-                ))
-                fig_mom.add_trace(go.Scatter(
-                    x=tail["Date"], y=tail["MA50"],
-                    name="50d MA", line=dict(color="#81C784", width=1.5, dash="dash"),
-                ))
-                fig_mom.add_trace(go.Scatter(
-                    x=tail["Date"], y=tail["MA200"],
-                    name="200d MA", line=dict(color="#FF8A65", width=1.5, dash="dash"),
-                ))
-                style_fig(fig_mom, "", height=280)
-                fig_mom.update_layout(
-                    margin=dict(t=10, b=30),
-                    showlegend=(idx == 0),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                                xanchor="left", x=0),
+        countries_key = ",".join(api_countries)
+
+        if not country_filter:
+            st.warning("Select at least one territory.")
+        else:
+            with st.spinner("Fetching calendar from Trading Economics…"):
+                raw = fetch_te_calendar(countries_key, init_str, end_str, api_key)
+
+            if isinstance(raw, dict) and "error" in raw:
+                st.error(
+                    f"**API error:** {raw['error']}\n\n"
+                    "Check that your API key is correct, or leave it blank to "
+                    "use the guest demo key."
                 )
-                st.plotly_chart(fig_mom, use_container_width=True)
+                st.stop()
 
-    st.markdown("---")
+            if not raw:
+                st.info("No events returned for the selected period and territories.")
+            else:
+                rows = []
+                for ev in raw:
+                    imp = int(ev.get("Importance") or 1)
+                    if imp not in selected_importance_ints:
+                        continue
 
-    # ── Market context panel ──
-    st.markdown("### Market Context")
-    st.caption(
-        "Quick check for each product: is the forward curve in **contango** "
-        "(front < back, typically bearish / oversupplied) or **backwardation** "
-        "(front > back, typically bullish / tight supply)? And is the current "
-        "price above or below where it usually sits at this time of year?"
-    )
+                    api_country    = (ev.get("Country") or "").strip()
+                    territory_label = API_TO_TERRITORY.get(api_country.lower())
+                    if territory_label is None or territory_label not in country_filter:
+                        continue
 
-    ctx_cols = st.columns(max(len(forecast_products), 1))
-    for idx, product in enumerate(forecast_products):
-        if product not in forecast_results:
-            continue
-        m1_col = f"{product}|M1"
-        m6_col = f"{product}|M6"
-        spot_col = f"{product}|{forecast_tenor}"
+                    raw_date = ev.get("Date", "")
+                    try:
+                        dt        = datetime.datetime.fromisoformat(raw_date)
+                        date_str  = dt.strftime("%a %d %b")
+                        time_str  = dt.strftime("%H:%M")
+                    except Exception:
+                        date_str  = raw_date[:10]
+                        time_str  = ""
 
-        with ctx_cols[idx]:
-            st.markdown(f"**{product}**")
+                    flag = FLAG.get(territory_label, "")
 
-            # Curve shape
-            if m1_col in df.columns and m6_col in df.columns:
-                m1_p = df[m1_col].iloc[-1]
-                m6_p = df[m6_col].iloc[-1]
-                spread = m1_p - m6_p
-                if spread > 1:
-                    st.markdown(f"📈 **Backwardation** (M1–M6: +${spread:.2f})")
-                    st.caption("Front > back — usually means tight supply.")
-                elif spread < -1:
-                    st.markdown(f"📉 **Contango** (M1–M6: ${spread:.2f})")
-                    st.caption("Front < back — usually means oversupply.")
+                    rows.append({
+                        "Date":        date_str,
+                        "Time (UTC)":  time_str,
+                        "Territory":   f"{flag} {territory_label}",
+                        "Event":       ev.get("Event", ""),
+                        "Category":    ev.get("Category", ""),
+                        "Importance":  IMPORTANCE_LABEL[imp],
+                        "Previous":    ev.get("Previous")   or "—",
+                        "Forecast":    ev.get("Forecast") or ev.get("TEForecast") or "—",
+                        "Actual":      ev.get("Actual")     or "—",
+                    })
+
+                if not rows:
+                    st.info("No events match the selected importance / territory filters.")
                 else:
-                    st.markdown(f"➡️ **Flat** (M1–M6: ${spread:+.2f})")
-                    st.caption("No strong curve signal.")
+                    cal_df = pd.DataFrame(rows)
 
-            # vs seasonal norm
-            if spot_col in df.columns:
-                sub = df[["Date", spot_col]].dropna().copy()
-                sub["DayOfYear"] = sub["Date"].dt.dayofyear
-                sub["Year"] = sub["Date"].dt.year
-                seasonal_now = sub[sub["Year"].isin(range_years)].groupby("DayOfYear")[spot_col].mean()
-                norm_price = seasonal_now.get(current_doy, np.nan)
-                actual = forecast_results[product]["current"]
-                if not np.isnan(norm_price) and norm_price != 0:
-                    diff_pct = (actual - norm_price) / norm_price * 100
-                    if diff_pct > 2:
-                        st.markdown(f"🔺 **{diff_pct:+.1f}%** above seasonal norm")
-                        st.caption("Price is higher than usual for this time of year.")
-                    elif diff_pct < -2:
-                        st.markdown(f"🔻 **{diff_pct:+.1f}%** below seasonal norm")
-                        st.caption("Price is lower than usual for this time of year.")
-                    else:
-                        st.markdown(f"✅ **In line** with seasonal norm ({diff_pct:+.1f}%)")
-                        st.caption("Price is tracking the typical seasonal pattern.")
+                    def highlight_importance(val):
+                        if "High"   in val: return "color: #DC2626; font-weight: 600"
+                        if "Medium" in val: return "color: #D97706; font-weight: 600"
+                        return "color: #16A34A"
 
-    st.markdown("---")
+                    styled_df = cal_df.style.map(highlight_importance, subset=["Importance"])
 
-    # ── Monthly forecast table ──
-    st.markdown("### Monthly Forecast Table")
-    st.caption("Estimated month-end prices based on the seasonal model, with the historical low–high range.")
+                    st.dataframe(
+                        styled_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Date":       st.column_config.TextColumn(width="small"),
+                            "Time (UTC)": st.column_config.TextColumn(width="small"),
+                            "Territory":  st.column_config.TextColumn(width="medium"),
+                            "Event":      st.column_config.TextColumn(width="large"),
+                            "Category":   st.column_config.TextColumn(width="medium"),
+                            "Importance": st.column_config.TextColumn(width="small"),
+                            "Previous":   st.column_config.TextColumn(width="small"),
+                            "Forecast":   st.column_config.TextColumn(width="small"),
+                            "Actual":     st.column_config.TextColumn(width="small"),
+                        },
+                    )
 
-    table_rows = []
-    horizon_months = int(forecast_horizon.replace("M", ""))
-    for m in range(1, horizon_months + 1):
-        trade_day = min(m * 21, hz_days)
-        row = {"Month": (current_date + pd.DateOffset(months=m)).strftime("%b %Y")}
-        for product in forecast_products:
-            if product in forecast_results:
-                r = forecast_results[product]
-                row[f"{product}"] = f"${r['fwd_avg'][trade_day]:,.2f}"
-                row[f"{product} Low"] = f"${r['fwd_lo'][trade_day]:,.2f}"
-                row[f"{product} High"] = f"${r['fwd_hi'][trade_day]:,.2f}"
-        table_rows.append(row)
+                    st.caption(
+                        f"**{len(rows)}** events shown · "
+                        f"Source: Trading Economics · "
+                        f"Refreshes every 15 min · Times in UTC"
+                    )
 
-    st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
+            st.markdown("---")
+            st.info(
+                "💡 **What to watch for oil:**  "
+                "🇺🇸 **Fed decisions & NFP** — dollar moves directly inverse to oil.  "
+                "🇨🇳 **China PMI & industrial output** — biggest demand signal.  "
+                "🇪🇺 **ECB rate decisions** — affect Euro and European refinery margins.  "
+                "🇯🇵 **BoJ policy surprises** — JPY carry-trade unwinds ripple into commodities."
+            )
 
-    st.markdown("---")
-    st.info(
-        "💡 **Note:** This forecast follows historical seasonal patterns only. It does "
-        "not account for OPEC decisions, geopolitical events, demand shocks, or other "
-        "market-moving fundamentals. Use it as a baseline to compare your own view against."
-    )
+    with geo_tab:
+        st.markdown("### Geopolitical Risk Monitor")
+        st.caption("Ongoing situations with direct oil supply or shipping implications.")
+        st.info("🚧 Geopolitical calendar coming soon.")
 
 # ─── Footer ────────────────────────────────────────────────────────────────
 st.markdown("---")
-st.caption("Oil Barrel Dashboard · Data sourced from generated dummy prices · Built with Streamlit + Plotly")
+st.caption("Crude Oil Dashboard · Data: crude clean sheet · Built with Streamlit + Plotly")
