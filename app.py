@@ -263,7 +263,6 @@ elif view_mode == "Seasonality":
     sub = df[["Date", col_name]].dropna(subset=[col_name]).copy()
     sub["Year"] = sub["Date"].dt.year
     sub["DayOfYear"] = sub["Date"].dt.dayofyear
-    sub["MonthDay"] = sub["Date"].apply(lambda d: d.replace(year=2000))
 
     fig = go.Figure()
     range_years = sorted(sub["Year"].unique())[-5:]
@@ -271,19 +270,21 @@ elif view_mode == "Seasonality":
 
     if show_range and len(range_years) >= 2:
         agg = range_df.groupby("DayOfYear")[col_name].agg(["min", "max"]).reset_index()
-        # Reindex to continuous 1–365 and interpolate to remove weekend gaps
+        # Reindex to continuous 1–365 and interpolate
         full_days = pd.DataFrame({"DayOfYear": range(1, 366)})
         agg = full_days.merge(agg, on="DayOfYear", how="left")
         agg["min"] = agg["min"].interpolate(method="linear").bfill().ffill()
         agg["max"] = agg["max"].interpolate(method="linear").bfill().ffill()
-        agg["MonthDay"] = pd.to_datetime("2000-01-01") + pd.to_timedelta(agg["DayOfYear"] - 1, unit="D")
-        # Draw as a single closed polygon: upper edge forward, lower edge reversed
+        x_num = agg["DayOfYear"].tolist()
+        y_upper = agg["max"].tolist()
+        y_lower = agg["min"].tolist()
         fig.add_trace(go.Scatter(
-            x=pd.concat([agg["MonthDay"], agg["MonthDay"][::-1]]),
-            y=pd.concat([agg["max"], agg["min"][::-1]]),
+            x=x_num + x_num[::-1],
+            y=y_upper + y_lower[::-1],
             fill="toself",
             fillcolor="rgba(37,99,235,0.10)",
             line=dict(color="rgba(0,0,0,0)"),
+            connectgaps=True,
             name=f"{range_years[0]}–{range_years[-1]} Range",
             hoverinfo="skip",
         ))
@@ -292,18 +293,18 @@ elif view_mode == "Seasonality":
         avg = range_df.groupby("DayOfYear")[col_name].mean().reset_index()
         full_days = pd.DataFrame({"DayOfYear": range(1, 366)})
         avg = full_days.merge(avg, on="DayOfYear", how="left")
-        avg[col_name] = avg[col_name].interpolate(method="linear")
-        avg["MonthDay"] = pd.to_datetime("2000-01-01") + pd.to_timedelta(avg["DayOfYear"] - 1, unit="D")
+        avg[col_name] = avg[col_name].interpolate(method="linear").bfill().ffill()
         fig.add_trace(go.Scatter(
-            x=avg["MonthDay"], y=avg[col_name], name="5Y Average",
+            x=avg["DayOfYear"], y=avg[col_name], name="5Y Average",
             line=dict(color="#94A3B8", width=2, dash="dash"),
+            connectgaps=True,
         ))
 
     for i, year in enumerate(sorted(selected_years)):
         yr_data = sub[sub["Year"] == year].sort_values("DayOfYear")
         is_current = (year == current_year)
         fig.add_trace(go.Scatter(
-            x=yr_data["MonthDay"], y=yr_data[col_name],
+            x=yr_data["DayOfYear"], y=yr_data[col_name],
             name=str(year),
             line=dict(color=COLORS[i % len(COLORS)],
                       width=3 if is_current else 1.8),
@@ -311,8 +312,14 @@ elif view_mode == "Seasonality":
         ))
 
     style_fig(fig, f"{selected_product} {selected_tenor_season} — Seasonality")
-    fig.update_layout(xaxis=dict(tickformat="%b", dtick="M1",
-                                  range=["2000-01-01", "2000-12-31"], title=""))
+    # Use numerical x-axis with month labels
+    month_ticks = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
+    month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    fig.update_layout(xaxis=dict(
+        tickvals=month_ticks, ticktext=month_labels,
+        range=[1, 365], title=""
+    ))
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("### Monthly Averages by Year")
@@ -356,18 +363,21 @@ elif view_mode == "Spreads (M1–M2, etc.)":
     sp_df = pd.DataFrame({"Date": df["Date"], "Spread": spread})
     sp_df = sp_df.dropna(subset=["Spread"])
     sp_df["Year"] = sp_df["Date"].dt.year
-    sp_df["MonthDay"] = sp_df["Date"].apply(lambda d: d.replace(year=2000))
+    sp_df["DayOfYear"] = sp_df["Date"].dt.dayofyear
 
     fig3 = go.Figure()
     for i, year in enumerate(sorted(sp_df["Year"].unique())[-5:]):
         yr = sp_df[sp_df["Year"] == year].sort_values("Date")
         fig3.add_trace(go.Scatter(
-            x=yr["MonthDay"], y=yr["Spread"], name=str(year),
+            x=yr["DayOfYear"], y=yr["Spread"], name=str(year),
             line=dict(color=COLORS[i % len(COLORS)], width=2)
         ))
     style_fig(fig3, f"{spread_name} Spread — Seasonality", height=380)
-    fig3.update_layout(xaxis=dict(tickformat="%b", dtick="M1",
-                                   range=["2000-01-01", "2000-12-31"]))
+    month_ticks = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
+    month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    fig3.update_layout(xaxis=dict(tickvals=month_ticks, ticktext=month_labels,
+                                   range=[1, 365]))
     st.plotly_chart(fig3, use_container_width=True)
 
 # ═══ VIEW: Inter-Crude Spreads ═════════════════════════════════════════════
@@ -401,14 +411,14 @@ elif view_mode == "Inter-Crude Spreads":
     ck_df = pd.DataFrame({"Date": df["Date"], "Spread": crack})
     ck_df = ck_df.dropna(subset=["Spread"])
     ck_df["Year"] = ck_df["Date"].dt.year
-    ck_df["MonthDay"] = ck_df["Date"].apply(lambda d: d.replace(year=2000))
+    ck_df["DayOfYear"] = ck_df["Date"].dt.dayofyear
 
     fig4 = go.Figure()
     years = sorted(ck_df["Year"].unique())[-5:]
     for i, year in enumerate(years):
         yr = ck_df[ck_df["Year"] == year].sort_values("Date")
         fig4.add_trace(go.Scatter(
-            x=yr["MonthDay"], y=yr["Spread"], name=str(year),
+            x=yr["DayOfYear"], y=yr["Spread"], name=str(year),
             line=dict(color=COLORS[i % len(COLORS)], width=2)
         ))
     range_df = ck_df[ck_df["Year"].isin(years)]
@@ -418,20 +428,26 @@ elif view_mode == "Inter-Crude Spreads":
     agg = full_days.merge(agg, on="DayOfYear", how="left")
     agg["min"] = agg["min"].interpolate(method="linear").bfill().ffill()
     agg["max"] = agg["max"].interpolate(method="linear").bfill().ffill()
-    agg["MonthDay"] = pd.to_datetime("2000-01-01") + pd.to_timedelta(agg["DayOfYear"] - 1, unit="D")
+    x_num = agg["DayOfYear"].tolist()
+    y_upper = agg["max"].tolist()
+    y_lower = agg["min"].tolist()
     fig4.add_trace(go.Scatter(
-        x=pd.concat([agg["MonthDay"], agg["MonthDay"][::-1]]),
-        y=pd.concat([agg["max"], agg["min"][::-1]]),
+        x=x_num + x_num[::-1],
+        y=y_upper + y_lower[::-1],
         fill="toself",
         fillcolor="rgba(37,99,235,0.10)",
         line=dict(color="rgba(0,0,0,0)"),
+        connectgaps=True,
         name=f"{years[0]}–{years[-1]} Range",
         hoverinfo="skip",
     ))
 
     style_fig(fig4, f"Spread Seasonality: {crack_name}", height=400)
-    fig4.update_layout(xaxis=dict(tickformat="%b", dtick="M1",
-                                   range=["2000-01-01", "2000-12-31"]))
+    month_ticks = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
+    month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    fig4.update_layout(xaxis=dict(tickvals=month_ticks, ticktext=month_labels,
+                                   range=[1, 365]))
     st.plotly_chart(fig4, use_container_width=True)
 
 # ═══ VIEW: Calendar ════════════════════════════════════════════════════════
