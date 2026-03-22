@@ -271,21 +271,21 @@ elif view_mode == "Seasonality":
 
     if show_range and len(range_years) >= 2:
         agg = range_df.groupby("DayOfYear")[col_name].agg(["min", "max"]).reset_index()
-        # Reindex to continuous 1–365 and interpolate to remove weekend gaps / stripes
+        # Reindex to continuous 1–365 and interpolate to remove weekend gaps
         full_days = pd.DataFrame({"DayOfYear": range(1, 366)})
         agg = full_days.merge(agg, on="DayOfYear", how="left")
-        agg["min"] = agg["min"].interpolate(method="linear")
-        agg["max"] = agg["max"].interpolate(method="linear")
+        agg["min"] = agg["min"].interpolate(method="linear").bfill().ffill()
+        agg["max"] = agg["max"].interpolate(method="linear").bfill().ffill()
         agg["MonthDay"] = pd.to_datetime("2000-01-01") + pd.to_timedelta(agg["DayOfYear"] - 1, unit="D")
+        # Draw as a single closed polygon: upper edge forward, lower edge reversed
         fig.add_trace(go.Scatter(
-            x=agg["MonthDay"], y=agg["max"], mode="lines",
-            line=dict(width=0), showlegend=False, hoverinfo="skip"
-        ))
-        fig.add_trace(go.Scatter(
-            x=agg["MonthDay"], y=agg["min"], mode="lines",
-            line=dict(width=0), fill="tonexty",
-            fillcolor="rgba(37,99,235,0.08)",
+            x=pd.concat([agg["MonthDay"], agg["MonthDay"][::-1]]),
+            y=pd.concat([agg["max"], agg["min"][::-1]]),
+            fill="toself",
+            fillcolor="rgba(37,99,235,0.10)",
+            line=dict(color="rgba(0,0,0,0)"),
             name=f"{range_years[0]}–{range_years[-1]} Range",
+            hoverinfo="skip",
         ))
 
     if show_avg and len(range_years) >= 2:
@@ -416,15 +416,18 @@ elif view_mode == "Inter-Crude Spreads":
     agg = range_df.groupby("DayOfYear")["Spread"].agg(["min", "max"]).reset_index()
     full_days = pd.DataFrame({"DayOfYear": range(1, 366)})
     agg = full_days.merge(agg, on="DayOfYear", how="left")
-    agg["min"] = agg["min"].interpolate(method="linear")
-    agg["max"] = agg["max"].interpolate(method="linear")
+    agg["min"] = agg["min"].interpolate(method="linear").bfill().ffill()
+    agg["max"] = agg["max"].interpolate(method="linear").bfill().ffill()
     agg["MonthDay"] = pd.to_datetime("2000-01-01") + pd.to_timedelta(agg["DayOfYear"] - 1, unit="D")
-    fig4.add_trace(go.Scatter(x=agg["MonthDay"], y=agg["max"], mode="lines",
-                              line=dict(width=0), showlegend=False, hoverinfo="skip"))
-    fig4.add_trace(go.Scatter(x=agg["MonthDay"], y=agg["min"], mode="lines",
-                              line=dict(width=0), fill="tonexty",
-                              fillcolor="rgba(37,99,235,0.07)",
-                              name=f"{years[0]}–{years[-1]} Range"))
+    fig4.add_trace(go.Scatter(
+        x=pd.concat([agg["MonthDay"], agg["MonthDay"][::-1]]),
+        y=pd.concat([agg["max"], agg["min"][::-1]]),
+        fill="toself",
+        fillcolor="rgba(37,99,235,0.10)",
+        line=dict(color="rgba(0,0,0,0)"),
+        name=f"{years[0]}–{years[-1]} Range",
+        hoverinfo="skip",
+    ))
 
     style_fig(fig4, f"Spread Seasonality: {crack_name}", height=400)
     fig4.update_layout(xaxis=dict(tickformat="%b", dtick="M1",
