@@ -1,8 +1,9 @@
 """
 Crude Oil Price Dashboard
 --------------------------
-Bloomberg-style terminal interface for crude oil futures.
-Reads from Excel (crude clean sheet) — Brent, WTI, Dubai M1-M12.
+Reads historical crude oil prices from Excel (crude clean sheet) and presents
+interactive price history, seasonality, spread, inter-crude spread, and calendar
+charts via Streamlit + Plotly.
 """
 import streamlit as st
 import pandas as pd
@@ -10,221 +11,49 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pathlib import Path
+import datetime
 
 # ─── Page config ───────────────────────────────────────────────────────────
-st.set_page_config(page_title="Crude Oil Terminal", layout="wide", page_icon="")
+st.set_page_config(page_title="Crude Oil Dashboard", layout="wide", page_icon="🛢️")
 
-# ─── Color constants ──────────────────────────────────────────────────────
-BG       = "#0B0E14"
-BG_CARD  = "#111520"
-BG_SIDE  = "#0D1017"
-BORDER   = "#1C2333"
-AMBER    = "#FF8C00"
-TEXT     = "#D1D5DB"
-TEXT_DIM = "#6B7280"
-GREEN    = "#00C853"
-RED      = "#FF3D3D"
-WHITE    = "#F0F0F0"
-
-# ─── CSS + JS ─────────────────────────────────────────────────────────────
-st.markdown(f"""
+# ─── Custom CSS — white / light theme ─────────────────────────────────────
+st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
+    /* Sidebar */
+    [data-testid="stSidebar"] { background-color: #F5F7FA; }
+    [data-testid="stSidebar"] * { color: #1E293B !important; }
 
-    /* ── Base ── */
-    .stApp {{ background-color: {BG}; }}
-    .block-container {{ padding-top: 0.8rem; padding-bottom: 0; max-width: 100%; }}
-    h1, h2, h3 {{ color: {WHITE}; font-family: 'IBM Plex Sans', sans-serif; font-weight: 600; letter-spacing: -0.02em; }}
-    h1 {{ font-size: 1.3rem !important; }}
-    h2 {{ font-size: 1.1rem !important; margin-bottom: 0.3rem !important; }}
-    h3 {{ font-size: 0.95rem !important; color: {TEXT_DIM}; font-weight: 500; text-transform: uppercase; letter-spacing: 0.08em; }}
-    p, span, label, div {{ color: {TEXT}; font-family: 'IBM Plex Sans', sans-serif; }}
-    hr {{ border-color: {BORDER} !important; margin: 0.5rem 0 !important; }}
+    /* Main area */
+    .stApp { background-color: #FFFFFF; }
+    .block-container { padding-top: 1.2rem; }
+    h1, h2, h3 { color: #1E293B; }
+    p, span, label, div { color: #334155; }
 
-    /* ── HIDE the entire Streamlit header bar (contains keyboard_double_ text) ── */
-    /* We keep [data-testid="collapsedControl"] accessible via JS by moving it off-screen */
-    header[data-testid="stHeader"] {{
-        display: none !important;
-    }}
-    /* The collapsedControl renders outside the header in some Streamlit versions — hide it visually */
-    /* but keep it off-screen (NOT display:none) so JS .click() still works */
-    [data-testid="collapsedControl"] {{
-        position: fixed !important;
-        top: -9999px !important;
-        left: -9999px !important;
-        opacity: 0 !important;
-        pointer-events: none !important;
-        z-index: -1 !important;
-    }}
-    /* Hide the in-sidebar close button — our custom button handles everything */
-    [data-testid="stSidebarCollapseButton"] {{
-        display: none !important;
-    }}
+    /* KPI metrics */
+    .stMetric {
+        background: linear-gradient(135deg, #F8FAFC, #EEF2F7);
+        padding: 10px 14px; border-radius: 10px;
+        border: 1px solid #E2E8F0;
+    }
+    div[data-testid="stMetricValue"] { color: #0F172A !important; font-size: 1.15rem !important; }
+    div[data-testid="stMetricLabel"] { color: #64748B !important; font-size: 0.85rem !important; }
+    div[data-testid="stMetricDelta"] > div { font-size: 0.8rem !important; }
 
-    /* ── Sidebar ── */
-    [data-testid="stSidebar"] {{ background-color: {BG_SIDE}; border-right: 1px solid {BORDER}; }}
-    [data-testid="stSidebar"] * {{ color: {TEXT} !important; font-family: 'IBM Plex Sans', sans-serif; }}
-    [data-testid="stSidebar"] .stSelectbox label,
-    [data-testid="stSidebar"] .stMultiSelect label,
-    [data-testid="stSidebar"] .stCheckbox label,
-    [data-testid="stSidebar"] .stRadio label {{
-        font-size: 0.78rem !important; text-transform: uppercase;
-        letter-spacing: 0.06em; color: {TEXT_DIM} !important;
-    }}
-
-    /* ── Inputs ── */
-    .stSelectbox > div > div, .stMultiSelect > div > div {{
-        background-color: {BG_CARD} !important; border: 1px solid {BORDER} !important; color: {TEXT} !important;
-    }}
-
-    /* ── Metrics ── */
-    .stMetric {{ background: {BG_CARD}; padding: 8px 12px; border-radius: 4px; border: 1px solid {BORDER}; }}
-    div[data-testid="stMetricValue"] {{
-        color: {AMBER} !important; font-size: 1.05rem !important;
-        font-family: 'JetBrains Mono', monospace !important; font-weight: 600 !important;
-    }}
-    div[data-testid="stMetricLabel"] {{
-        color: {TEXT_DIM} !important; font-size: 0.72rem !important;
-        text-transform: uppercase; letter-spacing: 0.08em;
-    }}
-
-    /* ── Tabs ── */
-    .stTabs [data-baseweb="tab-list"] {{ background-color: transparent; border-bottom: 1px solid {BORDER}; }}
-    .stTabs [data-baseweb="tab"] {{
-        color: {TEXT_DIM} !important; font-family: 'IBM Plex Sans', sans-serif;
-        font-size: 0.82rem; font-weight: 500; text-transform: uppercase; letter-spacing: 0.06em;
-    }}
-    .stTabs [aria-selected="true"] {{ color: {AMBER} !important; border-bottom-color: {AMBER} !important; }}
-
-    /* ── Misc ── */
-    .stDataFrame {{ border: 1px solid {BORDER}; border-radius: 4px; }}
-    .stCaption, [data-testid="stCaptionContainer"] {{ color: {TEXT_DIM} !important; font-size: 0.72rem !important; }}
-    .stAlert {{ background-color: {BG_CARD} !important; border: 1px solid {BORDER} !important; color: {TEXT} !important; }}
-    #MainMenu {{ visibility: hidden; }}
-    footer {{ visibility: hidden; }}
-
-    /* ── Custom floating ▶ button (shown when sidebar is collapsed) ── */
-    #cot-open-btn {{
-        position: fixed;
-        top: 50%;
-        left: 0;
-        transform: translateY(-50%);
-        z-index: 999999;
-        background: {BG_CARD};
-        border: 1px solid {AMBER};
-        border-left: none;
-        border-radius: 0 6px 6px 0;
-        padding: 14px 7px;
-        cursor: pointer;
-        display: none;
-        flex-direction: column;
-        align-items: center;
-        gap: 6px;
-        box-shadow: 3px 0 16px rgba(255,140,0,0.18);
-        transition: background 0.15s;
-    }}
-    #cot-open-btn:hover {{ background: {BORDER}; }}
-    #cot-open-btn .cot-arrow {{
-        color: {AMBER};
-        font-size: 15px;
-        line-height: 1;
-        font-style: normal;
-    }}
-    #cot-open-btn .cot-label {{
-        color: {AMBER};
-        font-family: 'IBM Plex Sans', sans-serif;
-        font-size: 0.58rem;
-        font-weight: 700;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-        writing-mode: vertical-rl;
-        text-orientation: mixed;
-    }}
-
-    /* ── Tenor strip ── */
-    .tenor-strip {{
-        display: flex; gap: 2px; padding: 0; margin: 4px 0 8px 0;
-        font-family: 'JetBrains Mono', monospace;
-    }}
-    .tenor-cell {{
-        flex: 1; background: {BG_CARD}; border: 1px solid {BORDER};
-        padding: 6px 4px; text-align: center; min-width: 0;
-    }}
-    .tenor-cell:first-child {{ border-radius: 4px 0 0 4px; }}
-    .tenor-cell:last-child  {{ border-radius: 0 4px 4px 0; }}
-    .tenor-cell .t-label {{ font-size: 0.6rem; color: {TEXT_DIM}; font-weight: 600; letter-spacing: 0.1em; }}
-    .tenor-cell .t-price {{ font-size: 0.82rem; color: {WHITE}; font-weight: 600; margin: 1px 0; }}
-    .tenor-cell .t-chg   {{ font-size: 0.65rem; font-weight: 500; }}
-    .t-up   {{ color: {GREEN}; }}
-    .t-down {{ color: {RED}; }}
-    .t-flat {{ color: {TEXT_DIM}; }}
-    .tenor-cell .t-na {{ font-size: 0.75rem; color: {BORDER}; }}
-
-    /* ── Header bar ── */
-    .header-bar {{
-        display: flex; align-items: baseline; gap: 16px;
-        padding: 0 0 4px 0; border-bottom: 2px solid {AMBER}; margin-bottom: 6px;
-    }}
-    .header-bar .h-product {{
-        font-family: 'IBM Plex Sans', sans-serif; font-size: 1.15rem;
-        font-weight: 700; color: {AMBER}; letter-spacing: -0.01em;
-    }}
-    .header-bar .h-date {{
-        font-family: 'JetBrains Mono', monospace; font-size: 0.75rem;
-        color: {TEXT_DIM}; font-weight: 400;
-    }}
-    .section-div {{
-        font-family: 'IBM Plex Sans', sans-serif; font-size: 0.75rem;
-        color: {TEXT_DIM}; text-transform: uppercase; letter-spacing: 0.1em;
-        font-weight: 600; padding: 12px 0 4px 0;
-        border-bottom: 1px solid {BORDER}; margin-bottom: 8px;
-    }}
+    /* M1–M12 banner */
+    .tenor-banner {
+        display: flex; flex-wrap: wrap; gap: 8px;
+        padding: 12px 0; margin-bottom: 8px;
+    }
+    .tenor-card {
+        flex: 1 1 0; min-width: 80px; max-width: 120px;
+        background: #F1F5F9; border: 1px solid #E2E8F0;
+        border-radius: 8px; padding: 8px 10px; text-align: center;
+    }
+    .tenor-card .label { font-size: 0.7rem; color: #94A3B8; font-weight: 600; }
+    .tenor-card .price { font-size: 0.95rem; color: #0F172A; font-weight: 700; }
+    .tenor-card .chg-up   { font-size: 0.72rem; color: #16A34A; }
+    .tenor-card .chg-down { font-size: 0.72rem; color: #DC2626; }
 </style>
-
-<!-- Custom sidebar toggle button -->
-<button id="cot-open-btn" onclick="cotOpen()" title="Open sidebar">
-    <i class="cot-arrow">&#9654;</i>
-    <span class="cot-label">Menu</span>
-</button>
-
-<script>
-(function() {{
-    /* Try clicking Streamlit's native (off-screen) collapsedControl button.
-       Because it is NOT display:none — just opacity:0 + off-screen — JS .click() works. */
-    function cotOpen() {{
-        var btn = document.querySelector('[data-testid="collapsedControl"] button');
-        if (btn) {{ btn.click(); return; }}
-        /* Fallback: force sidebar open by removing the collapsed CSS class */
-        var sb = document.querySelector('[data-testid="stSidebar"]');
-        if (sb) sb.style.marginLeft = '0';
-    }}
-
-    function cotSync() {{
-        var sb  = document.querySelector('[data-testid="stSidebar"]');
-        var fab = document.getElementById('cot-open-btn');
-        if (!fab) return;
-        if (!sb) {{ fab.style.display = 'flex'; return; }}
-        var w = sb.getBoundingClientRect().width;
-        /* collapsed when sidebar width shrinks below ~50px */
-        fab.style.display = (w < 50) ? 'flex' : 'none';
-    }}
-
-    /* Expose so onclick="" works */
-    window.cotOpen = cotOpen;
-
-    /* Poll until sidebar exists, then observe */
-    var timer = setInterval(function() {{
-        var sb = document.querySelector('[data-testid="stSidebar"]');
-        if (!sb) return;
-        clearInterval(timer);
-        cotSync();
-        /* Watch for width changes (Streamlit animates the sidebar) */
-        var ro = new ResizeObserver(cotSync);
-        ro.observe(sb);
-        window.addEventListener('resize', cotSync);
-    }}, 100);
-}})();
-</script>
 """, unsafe_allow_html=True)
 
 # ─── Load data ─────────────────────────────────────────────────────────────
@@ -236,7 +65,7 @@ PRODUCT_MAP = {
     "Dubai":  "ICE DUBAI CRUDE",
 }
 PRODUCTS = list(PRODUCT_MAP.keys())
-TENORS   = [f"M{i}" for i in range(1, 13)]
+TENORS = [f"M{i}" for i in range(1, 13)]
 
 
 @st.cache_data(ttl=3600)
@@ -248,15 +77,18 @@ def load_data(path: str) -> pd.DataFrame:
     raw["Date"] = pd.to_datetime(raw["Date"], errors="coerce")
     raw = raw.dropna(subset=["Date"]).reset_index(drop=True)
 
+    # Normalise column names to "Product|Tenor" format
     df = pd.DataFrame({"Date": raw["Date"]})
     for short, prefix in PRODUCT_MAP.items():
         for t in TENORS:
             src = f"{prefix} {t}"
             dst = f"{short}|{t}"
             if src in raw.columns:
-                vals = pd.to_numeric(raw[src], errors="coerce").replace(0, np.nan)
+                vals = pd.to_numeric(raw[src], errors="coerce")
+                vals = vals.replace(0, np.nan)
                 df[dst] = vals
 
+    # Drop rows where all price columns are NaN
     price_cols = [c for c in df.columns if c != "Date"]
     df = df.dropna(subset=price_cols, how="all").reset_index(drop=True)
     return df
@@ -268,136 +100,123 @@ if not DATA_FILE.exists():
 
 df = load_data(str(DATA_FILE))
 
-columns   = [c for c in df.columns if c != "Date"]
-products  = sorted(set(c.split("|")[0] for c in columns))
+# ─── Parse column structure ────────────────────────────────────────────────
+columns = [c for c in df.columns if c != "Date"]
+products = sorted(set(c.split("|")[0] for c in columns))
 tenors_map = {}
 for c in columns:
     prod, tenor = c.split("|")
     tenors_map.setdefault(prod, []).append(tenor)
 
-# ─── Sidebar ──────────────────────────────────────────────────────────────
+# ─── Sidebar controls ─────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown(
-        f'<div style="font-family:IBM Plex Sans,sans-serif;font-size:1.1rem;'
-        f'font-weight:700;color:{AMBER};letter-spacing:0.02em;padding:8px 0 4px 0;">'
-        f'CRUDE OIL TERMINAL</div>', unsafe_allow_html=True)
-    st.markdown(
-        f'<div style="font-size:0.68rem;color:{TEXT_DIM};margin-bottom:12px;">'
-        f'METS Analytics</div>', unsafe_allow_html=True)
+    st.image("https://img.icons8.com/fluency/96/oil-industry.png", width=60)
+    st.title("Crude Oil Dashboard")
     st.markdown("---")
 
-    view_mode = st.radio("VIEW", [
-        "Price History", "Seasonality", "Time Spreads", "Inter-Crude Spreads",
+    view_mode = st.radio("📊 View Mode", [
+        "Price History",
+        "Seasonality",
+        "Spreads (M1–M2, etc.)",
+        "Inter-Crude Spreads",
+        "📅 Calendar",
     ])
-    st.markdown("---")
-
-    selected_product  = st.selectbox("PRODUCT", products) if view_mode != "Inter-Crude Spreads" else None
-    available_tenors  = tenors_map.get(selected_product, TENORS) if selected_product else TENORS
-
-    if view_mode == "Price History":
-        selected_tenors = st.multiselect("TENORS", available_tenors, default=["M1", "M2"])
-
-    elif view_mode == "Seasonality":
-        selected_tenor_season = st.selectbox("TENOR", available_tenors, index=0)
-        current_year  = df["Date"].dt.year.max()
-        all_years     = sorted(df["Date"].dt.year.unique(), reverse=True)
-        selected_years = st.multiselect("COMPARE YEARS", all_years, default=all_years[:5])
-        show_range    = st.checkbox("Min/Max Range", value=True)
-        show_avg      = st.checkbox("Average of Selection", value=True)
-
-    elif view_mode == "Time Spreads":
-        spread_tenors = [t for t in available_tenors if t.startswith("M")]
-        c1, c2 = st.columns(2)
-        with c1: front_tenor = st.selectbox("FRONT", spread_tenors, index=0)
-        with c2: back_tenor  = st.selectbox("BACK",  spread_tenors,
-                                              index=min(1, len(spread_tenors)-1))
-
-    elif view_mode == "Inter-Crude Spreads":
-        crude_a      = st.selectbox("CRUDE A", products, index=0)
-        crude_b      = st.selectbox("CRUDE B", [p for p in products if p != crude_a], index=0)
-        spread_tenor = st.selectbox("TENOR", TENORS, index=0)
 
     st.markdown("---")
-    st.caption("Source: crude clean sheet")
 
-# ─── Plotly helpers ───────────────────────────────────────────────────────
-CHART_COLORS = [AMBER, "#5B9CF6", GREEN, RED, "#A78BFA", "#F472B6",
-                "#38BDF8", "#FBBF24", "#6EE7B7", "#94A3B8"]
-MONTH_TICKS  = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
-MONTH_LABELS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    if view_mode != "📅 Calendar":
+        st.subheader("Product Selection")
+        selected_product = st.selectbox("Product", products)
+        available_tenors = tenors_map.get(selected_product, TENORS)
+
+        if view_mode == "Price History":
+            selected_tenors = st.multiselect("Tenors", available_tenors, default=["M1", "M2"])
+        elif view_mode == "Seasonality":
+            selected_tenor_season = st.selectbox("Tenor", available_tenors, index=0)
+            current_year = df["Date"].dt.year.max()
+            all_years = sorted(df["Date"].dt.year.unique(), reverse=True)
+            default_years = [y for y in all_years[:5]]
+            selected_years = st.multiselect("Compare Years", all_years, default=default_years)
+            show_range = st.checkbox("Show 5-Year Min/Max Range", value=True)
+            show_avg = st.checkbox("Show 5-Year Average", value=True)
+        elif view_mode == "Spreads (M1–M2, etc.)":
+            spread_tenors = [t for t in available_tenors if t.startswith("M")]
+            col1, col2 = st.columns(2)
+            with col1:
+                front_tenor = st.selectbox("Front", spread_tenors, index=0)
+            with col2:
+                back_idx = min(1, len(spread_tenors) - 1)
+                back_tenor = st.selectbox("Back", spread_tenors, index=back_idx)
+        elif view_mode == "Inter-Crude Spreads":
+            crude_a = st.selectbox("Crude A", products, index=0)
+            crude_b = st.selectbox("Crude B", [p for p in products if p != crude_a], index=0)
+            spread_tenor = st.selectbox("Tenor", TENORS, index=0)
+
+    st.markdown("---")
+    st.caption("Data: crude clean sheet · Brent / WTI / Dubai")
+
+# ─── Plotting helpers ──────────────────────────────────────────────────────
+COLORS = ["#2563EB", "#DC2626", "#16A34A", "#D97706", "#7C3AED", "#DB2777",
+          "#0891B2", "#4F46E5", "#B45309", "#64748B"]
 
 
-def style_fig(fig, title="", height=520):
+def style_fig(fig, title="", height=560):
     fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor=BG_CARD,
-        title=dict(
-            text=title.upper() if title else "",
-            font=dict(family="IBM Plex Sans", size=13, color=TEXT_DIM),
-            x=0.01, y=0.99,
-        ),
-        # Legend anchored BELOW the x-axis — never overlaps the chart
-        legend=dict(
-            bgcolor="rgba(17,21,32,0.9)",
-            bordercolor=BORDER,
-            borderwidth=1,
-            font=dict(family="JetBrains Mono", size=10, color=TEXT),
-            orientation="h",
-            yanchor="top",
-            y=-0.10,
-            xanchor="left",
-            x=0,
-            itemwidth=40,
-            itemsizing="constant",
-        ),
+        template="plotly_white",
+        paper_bgcolor="rgba(255,255,255,0)",
+        plot_bgcolor="rgba(248,250,252,1)",
+        title=dict(text=title, font=dict(size=17, color="#1E293B"), x=0.02),
+        legend=dict(bgcolor="rgba(255,255,255,0.8)", font=dict(size=11, color="#334155")),
         height=height,
-        margin=dict(l=55, r=20, t=36, b=90),   # large bottom margin for legend
+        margin=dict(l=50, r=30, t=50, b=50),
         hovermode="x unified",
-        hoverlabel=dict(
-            bgcolor=BG_CARD,
-            font=dict(family="JetBrains Mono", size=11, color=WHITE),
-            bordercolor=BORDER,
-        ),
-        xaxis=dict(
-            gridcolor="#1C2333", showgrid=True, gridwidth=1, zeroline=False,
-            linecolor=BORDER,
-            tickfont=dict(family="JetBrains Mono", size=10, color=TEXT_DIM),
-            hoverformat=" ",   # suppress raw day-of-year number in hover header
-        ),
-        yaxis=dict(
-            gridcolor="#1C2333", showgrid=True, gridwidth=1, zeroline=False,
-            linecolor=BORDER, side="right",
-            title=dict(text="$/bbl",
-                       font=dict(family="IBM Plex Sans", size=10, color=TEXT_DIM)),
-            tickformat=",.1f",
-            tickfont=dict(family="JetBrains Mono", size=10, color=TEXT_DIM),
-        ),
+        xaxis=dict(gridcolor="rgba(0,0,0,0.06)", showgrid=True),
+        yaxis=dict(gridcolor="rgba(0,0,0,0.06)", showgrid=True,
+                   title="$/bbl", tickformat=",.1f"),
     )
     return fig
 
 
-def hex_to_rgba(hx, a):
-    h = hx.lstrip("#")
-    return f"rgba({int(h[0:2],16)},{int(h[2:4],16)},{int(h[4:6],16)},{a})"
+def hex_to_rgba(hex_color, alpha):
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
 
 
-# ─── Header + Tenor Strip ────────────────────────────────────────────────
-latest    = df.iloc[-1]
-prev      = df.iloc[-2]
-last_date = df["Date"].iloc[-1].strftime("%d %b %Y")
+# ─── M1–M12 Banner at the top ─────────────────────────────────────────────
+if view_mode != "📅 Calendar":
+    st.markdown(f"## {selected_product}")
 
-header_label = f"{crude_a} / {crude_b}" if view_mode == "Inter-Crude Spreads" else selected_product.upper()
-st.markdown(
-    f'<div class="header-bar">'
-    f'<span class="h-product">{header_label}</span>'
-    f'<span class="h-date">Last: {last_date}</span>'
-    f'</div>', unsafe_allow_html=True)
+    latest = df.iloc[-1]
+    prev = df.iloc[-2]
 
+    cards_html = '<div class="tenor-banner">'
+    for t in TENORS:
+        col_name = f"{selected_product}|{t}"
+        if col_name in df.columns and pd.notna(latest[col_name]):
+            val = latest[col_name]
+            chg = val - prev[col_name] if pd.notna(prev[col_name]) else 0
+            chg_cls = "chg-up" if chg >= 0 else "chg-down"
+            chg_sign = "+" if chg >= 0 else ""
+            cards_html += (
+                f'<div class="tenor-card">'
+                f'<div class="label">{t}</div>'
+                f'<div class="price">${val:,.2f}</div>'
+                f'<div class="{chg_cls}">{chg_sign}{chg:.2f}</div>'
+                f'</div>'
+            )
+        else:
+            cards_html += (
+                f'<div class="tenor-card">'
+                f'<div class="label">{t}</div>'
+                f'<div class="price" style="color:#94A3B8;">—</div>'
+                f'</div>'
+            )
+    cards_html += '</div>'
+    st.markdown(cards_html, unsafe_allow_html=True)
+    st.markdown("---")
 
-
-
-# ═══ PRICE HISTORY ════════════════════════════════════════════════════════
+# ═══ VIEW: Price History ═══════════════════════════════════════════════════
 if view_mode == "Price History":
     if not selected_tenors:
         st.warning("Select at least one tenor.")
@@ -409,29 +228,32 @@ if view_mode == "Price History":
         if col in df.columns:
             fig.add_trace(go.Scatter(
                 x=df["Date"], y=df[col], name=tenor,
-                line=dict(color=CHART_COLORS[i % len(CHART_COLORS)], width=1.5),
+                line=dict(color=COLORS[i % len(COLORS)], width=2),
             ))
-    style_fig(fig, f"{selected_product} Price History")
+    style_fig(fig, f"{selected_product} — Price History")
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown('<div class="section-div">Forward Curve — Latest</div>', unsafe_allow_html=True)
-    curve_vals = [
-        latest[f"{selected_product}|{t}"]
-        if f"{selected_product}|{t}" in df.columns else np.nan
-        for t in TENORS
-    ]
+    st.markdown("### Forward Curve (Latest)")
+    curve_vals = []
+    for t in TENORS:
+        c = f"{selected_product}|{t}"
+        if c in df.columns:
+            curve_vals.append(latest[c])
+        else:
+            curve_vals.append(np.nan)
+
     fig2 = go.Figure()
     fig2.add_trace(go.Scatter(
         x=TENORS, y=curve_vals, mode="lines+markers",
-        line=dict(color=AMBER, width=2),
-        marker=dict(size=6, color=AMBER, symbol="diamond"),
-        fill="tozeroy", fillcolor=hex_to_rgba(AMBER, 0.06),
-        showlegend=False,
+        line=dict(color="#2563EB", width=3),
+        marker=dict(size=8, color="#2563EB"),
+        fill="tozeroy", fillcolor="rgba(37,99,235,0.07)"
     ))
-    style_fig(fig2, "", height=300)
+    style_fig(fig2, f"{selected_product} — Forward Curve", height=350)
+    fig2.update_layout(xaxis_title="Contract Month")
     st.plotly_chart(fig2, use_container_width=True)
 
-# ═══ SEASONALITY ══════════════════════════════════════════════════════════
+# ═══ VIEW: Seasonality ════════════════════════════════════════════════════
 elif view_mode == "Seasonality":
     col_name = f"{selected_product}|{selected_tenor_season}"
     if col_name not in df.columns:
@@ -439,144 +261,126 @@ elif view_mode == "Seasonality":
         st.stop()
 
     sub = df[["Date", col_name]].dropna(subset=[col_name]).copy()
-    sub["Year"]      = sub["Date"].dt.year
+    sub["Year"] = sub["Date"].dt.year
     sub["DayOfYear"] = sub["Date"].dt.dayofyear
 
     fig = go.Figure()
     range_years = sorted(sub["Year"].unique())[-5:]
-    range_df    = sub[sub["Year"].isin(range_years)]
-    # Band uses selected years excluding the current year
-    band_years = sorted([y for y in selected_years if y != current_year])
+    range_df = sub[sub["Year"].isin(range_years)]
 
-    if show_range and len(band_years) >= 2:
-        band_df = sub[sub["Year"].isin(band_years)]
-        year_frames = []
-        for yr in band_years:
-            yr_df = band_df[band_df["Year"] == yr][["DayOfYear", col_name]].copy()
-            yr_df = yr_df.drop_duplicates("DayOfYear").set_index("DayOfYear")
-            yr_df = yr_df.reindex(range(1, 366))
-            yr_df[col_name] = yr_df[col_name].interpolate("linear").bfill().ffill()
-            year_frames.append(yr_df[col_name].rename(yr))
-        grid = pd.concat(year_frames, axis=1)
-        band_min = grid.min(axis=1)
-        band_max = grid.max(axis=1)
-        x = list(range(1, 366))
+    if show_range and len(range_years) >= 2:
+        agg = range_df.groupby("DayOfYear")[col_name].agg(["min", "max"]).reset_index()
+        # Reindex to continuous 1–365 and interpolate
+        full_days = pd.DataFrame({"DayOfYear": range(1, 366)})
+        agg = full_days.merge(agg, on="DayOfYear", how="left")
+        agg["min"] = agg["min"].interpolate(method="linear").bfill().ffill()
+        agg["max"] = agg["max"].interpolate(method="linear").bfill().ffill()
+        x_num = agg["DayOfYear"].tolist()
+        y_upper = agg["max"].tolist()
+        y_lower = agg["min"].tolist()
         fig.add_trace(go.Scatter(
-            x=x, y=band_min.tolist(),
-            line=dict(color="rgba(0,0,0,0)"), showlegend=False,
-            hoverinfo="skip", connectgaps=True,
-        ))
-        fig.add_trace(go.Scatter(
-            x=x, y=band_max.tolist(),
-            fill="tonexty", fillcolor="rgba(255,140,0,0.10)",
-            line=dict(color="rgba(0,0,0,0)"), connectgaps=True,
-            name=f"{band_years[0]}–{band_years[-1]} Range",
+            x=x_num + x_num[::-1],
+            y=y_upper + y_lower[::-1],
+            fill="toself",
+            fillcolor="rgba(37,99,235,0.10)",
+            line=dict(color="rgba(0,0,0,0)"),
+            connectgaps=True,
+            name=f"{range_years[0]}–{range_years[-1]} Range",
             hoverinfo="skip",
         ))
 
-    if show_avg and len(band_years) >= 2:
-        band_df_avg = sub[sub["Year"].isin(band_years)]
-        year_frames_avg = []
-        for yr in band_years:
-            yr_df = band_df_avg[band_df_avg["Year"] == yr][["DayOfYear", col_name]].copy()
-            yr_df = yr_df.drop_duplicates("DayOfYear").set_index("DayOfYear")
-            yr_df = yr_df.reindex(range(1, 366))
-            yr_df[col_name] = yr_df[col_name].interpolate("linear").bfill().ffill()
-            year_frames_avg.append(yr_df[col_name].rename(yr))
-        grid_avg = pd.concat(year_frames_avg, axis=1)
-        avg_vals = grid_avg.mean(axis=1)
+    if show_avg and len(range_years) >= 2:
+        avg = range_df.groupby("DayOfYear")[col_name].mean().reset_index()
+        full_days = pd.DataFrame({"DayOfYear": range(1, 366)})
+        avg = full_days.merge(avg, on="DayOfYear", how="left")
+        avg[col_name] = avg[col_name].interpolate(method="linear").bfill().ffill()
         fig.add_trace(go.Scatter(
-            x=list(range(1, 366)), y=avg_vals.tolist(),
-            name=f"{len(band_years)}Y Avg",
-            line=dict(color=TEXT_DIM, width=1.5, dash="dot"), connectgaps=True,
-            hovertemplate="%{y:.1f}<extra>" + f"{len(band_years)}Y Avg" + "</extra>",
+            x=avg["DayOfYear"], y=avg[col_name], name="5Y Average",
+            line=dict(color="#94A3B8", width=2, dash="dash"),
+            connectgaps=True,
         ))
 
     for i, year in enumerate(sorted(selected_years)):
-        yr = sub[sub["Year"] == year].drop_duplicates("DayOfYear").sort_values("DayOfYear")
+        yr_data = sub[sub["Year"] == year].sort_values("DayOfYear")
+        is_current = (year == current_year)
         fig.add_trace(go.Scatter(
-            x=yr["DayOfYear"], y=yr[col_name], name=str(year),
-            line=dict(
-                color=CHART_COLORS[i % len(CHART_COLORS)],
-                width=2.5 if year == current_year else 1.2,
-            ),
-            opacity=1.0 if year == current_year else 0.7,
-            hovertemplate="%{y:.1f}<extra>" + str(year) + "</extra>",
+            x=yr_data["DayOfYear"], y=yr_data[col_name],
+            name=str(year),
+            line=dict(color=COLORS[i % len(COLORS)],
+                      width=3 if is_current else 1.8),
+            opacity=1.0 if is_current else 0.75,
         ))
 
-    style_fig(fig, f"{selected_product} {selected_tenor_season} Seasonality")
-    fig.update_layout(xaxis=dict(tickvals=MONTH_TICKS, ticktext=MONTH_LABELS,
-                                  range=[1, 365], title="", hoverformat=" "))
+    style_fig(fig, f"{selected_product} {selected_tenor_season} — Seasonality")
+    # Use numerical x-axis with month labels
+    month_ticks = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
+    month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    fig.update_layout(xaxis=dict(
+        tickvals=month_ticks, ticktext=month_labels,
+        range=[1, 365], title=""
+    ))
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown('<div class="section-div">Monthly Averages</div>', unsafe_allow_html=True)
+    st.markdown("### Monthly Averages by Year")
     sub["Month"] = sub["Date"].dt.month
     pivot = sub.pivot_table(values=col_name, index="Year", columns="Month", aggfunc="mean")
     pivot.columns = [pd.Timestamp(2000, m, 1).strftime("%b") for m in pivot.columns]
     pivot = pivot.round(2)
-    st.dataframe(
-        pivot.loc[pivot.index.isin(selected_years)] if selected_years else pivot,
-        use_container_width=True,
-    )
+    if not selected_years:
+        st.dataframe(pivot, use_container_width=True)
+    else:
+        st.dataframe(pivot.loc[pivot.index.isin(selected_years)], use_container_width=True)
 
-# ═══ TIME SPREADS ═════════════════════════════════════════════════════════
-elif view_mode == "Time Spreads":
+# ═══ VIEW: Spreads ═════════════════════════════════════════════════════════
+elif view_mode == "Spreads (M1–M2, etc.)":
     front_col = f"{selected_product}|{front_tenor}"
-    back_col  = f"{selected_product}|{back_tenor}"
+    back_col = f"{selected_product}|{back_tenor}"
     if front_col not in df.columns or back_col not in df.columns:
         st.error("Selected tenors not available.")
         st.stop()
 
-    spread      = df[front_col] - df[back_col]
-    spread_name = f"{selected_product} {front_tenor}-{back_tenor}"
+    spread = df[front_col] - df[back_col]
+    spread_name = f"{selected_product} {front_tenor}–{back_tenor}"
 
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        row_heights=[0.6, 0.4], vertical_spacing=0.06)
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.65, 0.35],
+                        vertical_spacing=0.06)
     fig.add_trace(go.Scatter(x=df["Date"], y=df[front_col], name=front_tenor,
-                             line=dict(color=AMBER, width=1.5)), row=1, col=1)
+                             line=dict(color="#2563EB", width=2)), row=1, col=1)
     fig.add_trace(go.Scatter(x=df["Date"], y=df[back_col], name=back_tenor,
-                             line=dict(color="#5B9CF6", width=1.5)), row=1, col=1)
-
-    # Use a filled area line for the spread so it's clearly visible at any scale
-    spread_clean = spread.dropna()
-    fig.add_trace(go.Scatter(
-        x=df["Date"], y=spread,
-        name="Spread",
-        line=dict(color=AMBER, width=1.5),
-        fill="tozeroy",
-        fillcolor=hex_to_rgba(GREEN, 0.15),
-    ), row=2, col=1)
-    fig.add_hline(y=0, line_dash="dot", line_color=TEXT_DIM, opacity=0.6, row=2, col=1)
+                             line=dict(color="#DC2626", width=2)), row=1, col=1)
+    colors = ["#16A34A" if v >= 0 else "#DC2626" for v in spread]
+    fig.add_trace(go.Bar(x=df["Date"], y=spread, name="Spread",
+                         marker_color=colors, opacity=0.7), row=2, col=1)
+    fig.add_hline(y=0, line_dash="dot", line_color="#94A3B8", opacity=0.6, row=2, col=1)
 
     style_fig(fig, f"{spread_name} Spread", height=620)
     fig.update_yaxes(title_text="$/bbl", row=1, col=1)
-
-    # Auto-range the spread panel with a small padding so it fills the panel
-    pad = max(spread_clean.abs().quantile(0.99) * 0.15, 0.05)
-    fig.update_yaxes(
-        title_text="Spread ($/bbl)", row=2, col=1,
-        range=[spread_clean.min() - pad, spread_clean.max() + pad],
-    )
+    fig.update_yaxes(title_text="Spread $/bbl", row=2, col=1)
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown('<div class="section-div">Spread Seasonality</div>', unsafe_allow_html=True)
-    sp = pd.DataFrame({"Date": df["Date"], "Spread": spread}).dropna(subset=["Spread"])
-    sp["Year"]      = sp["Date"].dt.year
-    sp["DayOfYear"] = sp["Date"].dt.dayofyear
+    st.markdown("### Spread Seasonality")
+    sp_df = pd.DataFrame({"Date": df["Date"], "Spread": spread})
+    sp_df = sp_df.dropna(subset=["Spread"])
+    sp_df["Year"] = sp_df["Date"].dt.year
+    sp_df["DayOfYear"] = sp_df["Date"].dt.dayofyear
 
     fig3 = go.Figure()
-    for i, year in enumerate(sorted(sp["Year"].unique())[-5:]):
-        yr = sp[sp["Year"] == year].drop_duplicates("DayOfYear").sort_values("Date")
+    for i, year in enumerate(sorted(sp_df["Year"].unique())[-5:]):
+        yr = sp_df[sp_df["Year"] == year].sort_values("Date")
         fig3.add_trace(go.Scatter(
             x=yr["DayOfYear"], y=yr["Spread"], name=str(year),
-            line=dict(color=CHART_COLORS[i % len(CHART_COLORS)], width=1.3),
-            hovertemplate="%{y:.2f}<extra>" + str(year) + "</extra>",
+            line=dict(color=COLORS[i % len(COLORS)], width=2)
         ))
-    style_fig(fig3, f"{spread_name} Spread Seasonality", height=380)
-    fig3.update_layout(xaxis=dict(tickvals=MONTH_TICKS, ticktext=MONTH_LABELS, range=[1, 365], hoverformat=" "))
+    style_fig(fig3, f"{spread_name} Spread — Seasonality", height=380)
+    month_ticks = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
+    month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    fig3.update_layout(xaxis=dict(tickvals=month_ticks, ticktext=month_labels,
+                                   range=[1, 365]))
     st.plotly_chart(fig3, use_container_width=True)
 
-# ═══ INTER-CRUDE SPREADS ═════════════════════════════════════════════════
+# ═══ VIEW: Inter-Crude Spreads ═════════════════════════════════════════════
 elif view_mode == "Inter-Crude Spreads":
     col_a = f"{crude_a}|{spread_tenor}"
     col_b = f"{crude_b}|{spread_tenor}"
@@ -584,77 +388,288 @@ elif view_mode == "Inter-Crude Spreads":
         st.error(f"Columns not found: {col_a} or {col_b}")
         st.stop()
 
-    crack      = df[col_a] - df[col_b]
+    crack = df[col_a] - df[col_b]
     crack_name = f"{crude_a} vs {crude_b} ({spread_tenor})"
-    crack_clean = crack.dropna()
 
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        row_heights=[0.6, 0.4], vertical_spacing=0.06)
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.55, 0.45],
+                        vertical_spacing=0.06)
     fig.add_trace(go.Scatter(x=df["Date"], y=df[col_a], name=crude_a,
-                             line=dict(color=AMBER, width=1.5)), row=1, col=1)
+                             line=dict(color="#2563EB", width=2)), row=1, col=1)
     fig.add_trace(go.Scatter(x=df["Date"], y=df[col_b], name=crude_b,
-                             line=dict(color="#5B9CF6", width=1.5)), row=1, col=1)
-    fig.add_trace(go.Scatter(
-        x=df["Date"], y=crack, name="Spread",
-        line=dict(color=AMBER, width=1.5),
-        fill="tozeroy", fillcolor=hex_to_rgba(GREEN, 0.15),
-    ), row=2, col=1)
-    fig.add_hline(y=0, line_dash="dot", line_color=TEXT_DIM, opacity=0.6, row=2, col=1)
-    style_fig(fig, f"Inter-Crude: {crack_name}", height=620)
+                             line=dict(color="#DC2626", width=2)), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df["Date"], y=crack, name="Spread",
+                             line=dict(color="#16A34A", width=2),
+                             fill="tozeroy", fillcolor="rgba(22,163,74,0.10)"), row=2, col=1)
+    fig.add_hline(y=0, line_dash="dot", line_color="#94A3B8", opacity=0.6, row=2, col=1)
+
+    style_fig(fig, f"Inter-Crude Spread: {crack_name}", height=620)
     fig.update_yaxes(title_text="$/bbl", row=1, col=1)
-    pad = max(crack_clean.abs().quantile(0.99) * 0.15, 0.05)
-    fig.update_yaxes(
-        title_text="Spread ($/bbl)", row=2, col=1,
-        range=[crack_clean.min() - pad, crack_clean.max() + pad],
-    )
+    fig.update_yaxes(title_text="Spread $/bbl", row=2, col=1)
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown('<div class="section-div">Spread Seasonality</div>', unsafe_allow_html=True)
-    ck = pd.DataFrame({"Date": df["Date"], "Spread": crack}).dropna(subset=["Spread"])
-    ck["Year"]      = ck["Date"].dt.year
-    ck["DayOfYear"] = ck["Date"].dt.dayofyear
+    st.markdown("### Spread Seasonality")
+    ck_df = pd.DataFrame({"Date": df["Date"], "Spread": crack})
+    ck_df = ck_df.dropna(subset=["Spread"])
+    ck_df["Year"] = ck_df["Date"].dt.year
+    ck_df["DayOfYear"] = ck_df["Date"].dt.dayofyear
 
     fig4 = go.Figure()
-    years = sorted(ck["Year"].unique())[-5:]
-    current_year_ck = ck["Year"].max()
-    band_years_ck = sorted([y for y in years if y != current_year_ck])
+    years = sorted(ck_df["Year"].unique())[-5:]
     for i, year in enumerate(years):
-        yr = ck[ck["Year"] == year].drop_duplicates("DayOfYear").sort_values("Date")
+        yr = ck_df[ck_df["Year"] == year].sort_values("Date")
         fig4.add_trace(go.Scatter(
             x=yr["DayOfYear"], y=yr["Spread"], name=str(year),
-            line=dict(color=CHART_COLORS[i % len(CHART_COLORS)], width=1.3),
-            hovertemplate="%{y:.2f}<extra>" + str(year) + "</extra>",
+            line=dict(color=COLORS[i % len(COLORS)], width=2)
         ))
+    range_df = ck_df[ck_df["Year"].isin(years)]
+    range_df["DayOfYear"] = range_df["Date"].dt.dayofyear
+    agg = range_df.groupby("DayOfYear")["Spread"].agg(["min", "max"]).reset_index()
+    full_days = pd.DataFrame({"DayOfYear": range(1, 366)})
+    agg = full_days.merge(agg, on="DayOfYear", how="left")
+    agg["min"] = agg["min"].interpolate(method="linear").bfill().ffill()
+    agg["max"] = agg["max"].interpolate(method="linear").bfill().ffill()
+    x_num = agg["DayOfYear"].tolist()
+    y_upper = agg["max"].tolist()
+    y_lower = agg["min"].tolist()
+    fig4.add_trace(go.Scatter(
+        x=x_num + x_num[::-1],
+        y=y_upper + y_lower[::-1],
+        fill="toself",
+        fillcolor="rgba(37,99,235,0.10)",
+        line=dict(color="rgba(0,0,0,0)"),
+        connectgaps=True,
+        name=f"{years[0]}–{years[-1]} Range",
+        hoverinfo="skip",
+    ))
 
-    rng = ck[ck["Year"].isin(band_years_ck)].copy()
-    year_frames_ck = []
-    for yr in band_years_ck:
-        yr_df = rng[rng["Year"] == yr][["DayOfYear", "Spread"]].copy()
-        yr_df = yr_df.drop_duplicates("DayOfYear").set_index("DayOfYear")
-        yr_df = yr_df.reindex(range(1, 366))
-        yr_df["Spread"] = yr_df["Spread"].interpolate("linear").bfill().ffill()
-        year_frames_ck.append(yr_df["Spread"].rename(yr))
-    grid_ck  = pd.concat(year_frames_ck, axis=1)
-    ck_min   = grid_ck.min(axis=1)
-    ck_max   = grid_ck.max(axis=1)
-    x = list(range(1, 366))
-    fig4.add_trace(go.Scatter(
-        x=x, y=ck_min.tolist(),
-        line=dict(color="rgba(0,0,0,0)"), showlegend=False,
-        hoverinfo="skip", connectgaps=True,
-    ))
-    fig4.add_trace(go.Scatter(
-        x=x, y=ck_max.tolist(),
-        fill="tonexty", fillcolor="rgba(255,140,0,0.10)",
-        line=dict(color="rgba(0,0,0,0)"), connectgaps=True,
-        name=f"{band_years_ck[0]}–{band_years_ck[-1]} Range", hoverinfo="skip",
-    ))
     style_fig(fig4, f"Spread Seasonality: {crack_name}", height=400)
-    fig4.update_layout(xaxis=dict(tickvals=MONTH_TICKS, ticktext=MONTH_LABELS, range=[1, 365], hoverformat=" "))
+    month_ticks = [1, 32, 60, 91, 121, 152, 182, 213, 244, 274, 305, 335]
+    month_labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                    "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    fig4.update_layout(xaxis=dict(tickvals=month_ticks, ticktext=month_labels,
+                                   range=[1, 365]))
     st.plotly_chart(fig4, use_container_width=True)
 
+# ═══ VIEW: Calendar ════════════════════════════════════════════════════════
+elif view_mode == "📅 Calendar":
+
+    st.markdown("## Market Calendar")
+
+    econ_tab, geo_tab = st.tabs(["📊 Economic Calendar", "🌍 Geopolitical Calendar"])
+
+    with econ_tab:
+        st.markdown("### Economic Calendar")
+        st.caption(
+            "High-impact events for the US, EU, China, and Japan — "
+            "the four macro territories that drive oil demand and dollar pricing."
+        )
+
+        if "te_api_key" not in st.session_state:
+            st.session_state["te_api_key"] = ""
+
+        with st.expander(
+            "🔑 Trading Economics API Key",
+            expanded=not bool(st.session_state["te_api_key"])
+        ):
+            key_input = st.text_input(
+                "Paste your API key here",
+                value=st.session_state["te_api_key"],
+                type="password",
+                help=(
+                    "Get a key at tradingeconomics.com/api. "
+                    "Leave blank to use the free guest:guest demo key "
+                    "(returns limited sample data only)."
+                ),
+            )
+            if key_input != st.session_state["te_api_key"]:
+                st.session_state["te_api_key"] = key_input
+                st.rerun()
+
+        api_key = st.session_state["te_api_key"] or "guest:guest"
+
+        col_f1, col_f2, col_f3 = st.columns([1, 1, 1])
+
+        with col_f1:
+            horizon = st.selectbox(
+                "Horizon",
+                ["Today", "Next 7 Days", "Next 14 Days", "Next Month"],
+                index=1,
+                key="cal_horizon",
+            )
+
+        with col_f2:
+            importance_filter = st.multiselect(
+                "Importance",
+                ["🔴 High (3)", "🟡 Medium (2)", "🟢 Low (1)"],
+                default=["🔴 High (3)", "🟡 Medium (2)"],
+                key="cal_importance",
+            )
+
+        with col_f3:
+            country_filter = st.multiselect(
+                "Territory",
+                ["United States", "Euro Area", "China", "Japan"],
+                default=["United States", "Euro Area", "China", "Japan"],
+                key="cal_countries",
+            )
+
+        COUNTRY_API_MAP = {
+            "United States": ["united states"],
+            "Euro Area":     ["euro area", "germany", "france"],
+            "China":         ["china"],
+            "Japan":         ["japan"],
+        }
+
+        API_TO_TERRITORY = {}
+        for territory, api_list in COUNTRY_API_MAP.items():
+            for api_name in api_list:
+                API_TO_TERRITORY[api_name.lower()] = territory
+
+        IMPORTANCE_INT   = {"🔴 High (3)": 3, "🟡 Medium (2)": 2, "🟢 Low (1)": 1}
+        IMPORTANCE_LABEL = {3: "🔴 High", 2: "🟡 Medium", 1: "🟢 Low"}
+
+        FLAG = {
+            "United States": "🇺🇸",
+            "Euro Area":     "🇪🇺",
+            "China":         "🇨🇳",
+            "Japan":         "🇯🇵",
+        }
+
+        today     = datetime.date.today()
+        delta_map = {"Today": 0, "Next 7 Days": 7, "Next 14 Days": 14, "Next Month": 30}
+        end_date  = today + datetime.timedelta(days=delta_map[horizon])
+        init_str  = today.strftime("%Y-%m-%d")
+        end_str   = end_date.strftime("%Y-%m-%d")
+
+        selected_importance_ints = [IMPORTANCE_INT[i] for i in importance_filter]
+
+        @st.cache_data(ttl=900, show_spinner=False)
+        def fetch_te_calendar(countries_key, init_date, end_date, key):
+            import requests
+            import urllib.parse
+            encoded_countries = urllib.parse.quote(countries_key)
+            url = (
+                f"https://api.tradingeconomics.com/calendar/country/"
+                f"{encoded_countries}/{init_date}/{end_date}"
+                f"?c={key}"
+            )
+            try:
+                resp = requests.get(url, timeout=10)
+                resp.raise_for_status()
+                return resp.json()
+            except requests.exceptions.HTTPError as e:
+                return {"error": f"HTTP {resp.status_code}: {e}"}
+            except Exception as e:
+                return {"error": str(e)}
+
+        api_countries = []
+        for territory in country_filter:
+            for api_name in COUNTRY_API_MAP.get(territory, [territory.lower()]):
+                if api_name not in api_countries:
+                    api_countries.append(api_name)
+
+        countries_key = ",".join(api_countries)
+
+        if not country_filter:
+            st.warning("Select at least one territory.")
+        else:
+            with st.spinner("Fetching calendar from Trading Economics…"):
+                raw = fetch_te_calendar(countries_key, init_str, end_str, api_key)
+
+            if isinstance(raw, dict) and "error" in raw:
+                st.error(
+                    f"**API error:** {raw['error']}\n\n"
+                    "Check that your API key is correct, or leave it blank to "
+                    "use the guest demo key."
+                )
+                st.stop()
+
+            if not raw:
+                st.info("No events returned for the selected period and territories.")
+            else:
+                rows = []
+                for ev in raw:
+                    imp = int(ev.get("Importance") or 1)
+                    if imp not in selected_importance_ints:
+                        continue
+
+                    api_country    = (ev.get("Country") or "").strip()
+                    territory_label = API_TO_TERRITORY.get(api_country.lower())
+                    if territory_label is None or territory_label not in country_filter:
+                        continue
+
+                    raw_date = ev.get("Date", "")
+                    try:
+                        dt        = datetime.datetime.fromisoformat(raw_date)
+                        date_str  = dt.strftime("%a %d %b")
+                        time_str  = dt.strftime("%H:%M")
+                    except Exception:
+                        date_str  = raw_date[:10]
+                        time_str  = ""
+
+                    flag = FLAG.get(territory_label, "")
+
+                    rows.append({
+                        "Date":        date_str,
+                        "Time (UTC)":  time_str,
+                        "Territory":   f"{flag} {territory_label}",
+                        "Event":       ev.get("Event", ""),
+                        "Category":    ev.get("Category", ""),
+                        "Importance":  IMPORTANCE_LABEL[imp],
+                        "Previous":    ev.get("Previous")   or "—",
+                        "Forecast":    ev.get("Forecast") or ev.get("TEForecast") or "—",
+                        "Actual":      ev.get("Actual")     or "—",
+                    })
+
+                if not rows:
+                    st.info("No events match the selected importance / territory filters.")
+                else:
+                    cal_df = pd.DataFrame(rows)
+
+                    def highlight_importance(val):
+                        if "High"   in val: return "color: #DC2626; font-weight: 600"
+                        if "Medium" in val: return "color: #D97706; font-weight: 600"
+                        return "color: #16A34A"
+
+                    styled_df = cal_df.style.map(highlight_importance, subset=["Importance"])
+
+                    st.dataframe(
+                        styled_df,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            "Date":       st.column_config.TextColumn(width="small"),
+                            "Time (UTC)": st.column_config.TextColumn(width="small"),
+                            "Territory":  st.column_config.TextColumn(width="medium"),
+                            "Event":      st.column_config.TextColumn(width="large"),
+                            "Category":   st.column_config.TextColumn(width="medium"),
+                            "Importance": st.column_config.TextColumn(width="small"),
+                            "Previous":   st.column_config.TextColumn(width="small"),
+                            "Forecast":   st.column_config.TextColumn(width="small"),
+                            "Actual":     st.column_config.TextColumn(width="small"),
+                        },
+                    )
+
+                    st.caption(
+                        f"**{len(rows)}** events shown · "
+                        f"Source: Trading Economics · "
+                        f"Refreshes every 15 min · Times in UTC"
+                    )
+
+            st.markdown("---")
+            st.info(
+                "💡 **What to watch for oil:**  "
+                "🇺🇸 **Fed decisions & NFP** — dollar moves directly inverse to oil.  "
+                "🇨🇳 **China PMI & industrial output** — biggest demand signal.  "
+                "🇪🇺 **ECB rate decisions** — affect Euro and European refinery margins.  "
+                "🇯🇵 **BoJ policy surprises** — JPY carry-trade unwinds ripple into commodities."
+            )
+
+    with geo_tab:
+        st.markdown("### Geopolitical Risk Monitor")
+        st.caption("Ongoing situations with direct oil supply or shipping implications.")
+        st.info("🚧 Geopolitical calendar coming soon.")
+
 # ─── Footer ────────────────────────────────────────────────────────────────
-st.markdown(
-    f'<div style="text-align:center;padding:16px 0 8px 0;font-size:0.65rem;'
-    f'color:{BORDER};font-family:JetBrains Mono,monospace;letter-spacing:0.1em;">'
-    f'CRUDE OIL TERMINAL  |  METS ANALYTICS</div>', unsafe_allow_html=True)
+st.markdown("---")
+st.caption("Crude Oil Dashboard · Data: crude clean sheet · Built with Streamlit + Plotly")
