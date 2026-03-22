@@ -291,8 +291,8 @@ with st.sidebar:
     ])
     st.markdown("---")
 
-    selected_product  = st.selectbox("PRODUCT", products)
-    available_tenors  = tenors_map.get(selected_product, TENORS)
+    selected_product  = st.selectbox("PRODUCT", products) if view_mode != "Inter-Crude Spreads" else None
+    available_tenors  = tenors_map.get(selected_product, TENORS) if selected_product else TENORS
 
     if view_mode == "Price History":
         selected_tenors = st.multiselect("TENORS", available_tenors, default=["M1", "M2"])
@@ -302,8 +302,8 @@ with st.sidebar:
         current_year  = df["Date"].dt.year.max()
         all_years     = sorted(df["Date"].dt.year.unique(), reverse=True)
         selected_years = st.multiselect("COMPARE YEARS", all_years, default=all_years[:5])
-        show_range    = st.checkbox("5-Year Min/Max Range", value=True)
-        show_avg      = st.checkbox("5-Year Average", value=True)
+        show_range    = st.checkbox("Min/Max Range", value=True)
+        show_avg      = st.checkbox("Average of Selection", value=True)
 
     elif view_mode == "Time Spreads":
         spread_tenors = [t for t in available_tenors if t.startswith("M")]
@@ -363,6 +363,7 @@ def style_fig(fig, title="", height=520):
             gridcolor="#1C2333", showgrid=True, gridwidth=1, zeroline=False,
             linecolor=BORDER,
             tickfont=dict(family="JetBrains Mono", size=10, color=TEXT_DIM),
+            hoverformat=" ",   # suppress raw day-of-year number in hover header
         ),
         yaxis=dict(
             gridcolor="#1C2333", showgrid=True, gridwidth=1, zeroline=False,
@@ -386,31 +387,15 @@ latest    = df.iloc[-1]
 prev      = df.iloc[-2]
 last_date = df["Date"].iloc[-1].strftime("%d %b %Y")
 
+header_label = f"{crude_a} / {crude_b}" if view_mode == "Inter-Crude Spreads" else selected_product.upper()
 st.markdown(
     f'<div class="header-bar">'
-    f'<span class="h-product">{selected_product.upper()}</span>'
+    f'<span class="h-product">{header_label}</span>'
     f'<span class="h-date">Last: {last_date}</span>'
     f'</div>', unsafe_allow_html=True)
 
-cells = ""
-for t in TENORS:
-    cn = f"{selected_product}|{t}"
-    if cn in df.columns and pd.notna(latest[cn]):
-        val = latest[cn]
-        chg = val - prev[cn] if pd.notna(prev.get(cn)) else 0
-        if abs(chg) < 0.005:
-            cls, s = "t-flat", "UNCH"
-        elif chg > 0:
-            cls, s = "t-up", f"+{chg:.2f}"
-        else:
-            cls, s = "t-down", f"{chg:.2f}"
-        cells += (f'<div class="tenor-cell"><div class="t-label">{t}</div>'
-                  f'<div class="t-price">{val:,.2f}</div>'
-                  f'<div class="t-chg {cls}">{s}</div></div>')
-    else:
-        cells += (f'<div class="tenor-cell"><div class="t-label">{t}</div>'
-                  f'<div class="t-na">--</div></div>')
-st.markdown(f'<div class="tenor-strip">{cells}</div>', unsafe_allow_html=True)
+
+
 
 # ═══ PRICE HISTORY ════════════════════════════════════════════════════════
 if view_mode == "Price History":
@@ -460,35 +445,55 @@ elif view_mode == "Seasonality":
     fig = go.Figure()
     range_years = sorted(sub["Year"].unique())[-5:]
     range_df    = sub[sub["Year"].isin(range_years)]
+    # Band uses selected years excluding the current year
+    band_years = sorted([y for y in selected_years if y != current_year])
 
-    if show_range and len(range_years) >= 2:
-        agg = range_df.groupby("DayOfYear")[col_name].agg(["min","max"]).reset_index()
-        full_days = pd.DataFrame({"DayOfYear": range(1, 366)})
-        agg = full_days.merge(agg, on="DayOfYear", how="left")
-        agg["min"] = agg["min"].interpolate("linear").bfill().ffill()
-        agg["max"] = agg["max"].interpolate("linear").bfill().ffill()
-        x = agg["DayOfYear"].tolist()
+    if show_range and len(band_years) >= 2:
+        band_df = sub[sub["Year"].isin(band_years)]
+        year_frames = []
+        for yr in band_years:
+            yr_df = band_df[band_df["Year"] == yr][["DayOfYear", col_name]].copy()
+            yr_df = yr_df.drop_duplicates("DayOfYear").set_index("DayOfYear")
+            yr_df = yr_df.reindex(range(1, 366))
+            yr_df[col_name] = yr_df[col_name].interpolate("linear").bfill().ffill()
+            year_frames.append(yr_df[col_name].rename(yr))
+        grid = pd.concat(year_frames, axis=1)
+        band_min = grid.min(axis=1)
+        band_max = grid.max(axis=1)
+        x = list(range(1, 366))
         fig.add_trace(go.Scatter(
-            x=x + x[::-1],
-            y=agg["max"].tolist() + agg["min"].tolist()[::-1],
-            fill="toself", fillcolor="rgba(255,140,0,0.06)",
+            x=x, y=band_min.tolist(),
+            line=dict(color="rgba(0,0,0,0)"), showlegend=False,
+            hoverinfo="skip", connectgaps=True,
+        ))
+        fig.add_trace(go.Scatter(
+            x=x, y=band_max.tolist(),
+            fill="tonexty", fillcolor="rgba(255,140,0,0.10)",
             line=dict(color="rgba(0,0,0,0)"), connectgaps=True,
-            name=f"{range_years[0]}–{range_years[-1]} Range",
+            name=f"{band_years[0]}–{band_years[-1]} Range",
             hoverinfo="skip",
         ))
 
-    if show_avg and len(range_years) >= 2:
-        avg = range_df.groupby("DayOfYear")[col_name].mean().reset_index()
-        full_days = pd.DataFrame({"DayOfYear": range(1, 366)})
-        avg = full_days.merge(avg, on="DayOfYear", how="left")
-        avg[col_name] = avg[col_name].interpolate("linear").bfill().ffill()
+    if show_avg and len(band_years) >= 2:
+        band_df_avg = sub[sub["Year"].isin(band_years)]
+        year_frames_avg = []
+        for yr in band_years:
+            yr_df = band_df_avg[band_df_avg["Year"] == yr][["DayOfYear", col_name]].copy()
+            yr_df = yr_df.drop_duplicates("DayOfYear").set_index("DayOfYear")
+            yr_df = yr_df.reindex(range(1, 366))
+            yr_df[col_name] = yr_df[col_name].interpolate("linear").bfill().ffill()
+            year_frames_avg.append(yr_df[col_name].rename(yr))
+        grid_avg = pd.concat(year_frames_avg, axis=1)
+        avg_vals = grid_avg.mean(axis=1)
         fig.add_trace(go.Scatter(
-            x=avg["DayOfYear"], y=avg[col_name], name="5Y Avg",
+            x=list(range(1, 366)), y=avg_vals.tolist(),
+            name=f"{len(band_years)}Y Avg",
             line=dict(color=TEXT_DIM, width=1.5, dash="dot"), connectgaps=True,
+            hovertemplate="%{y:.1f}<extra>" + f"{len(band_years)}Y Avg" + "</extra>",
         ))
 
     for i, year in enumerate(sorted(selected_years)):
-        yr = sub[sub["Year"] == year].sort_values("DayOfYear")
+        yr = sub[sub["Year"] == year].drop_duplicates("DayOfYear").sort_values("DayOfYear")
         fig.add_trace(go.Scatter(
             x=yr["DayOfYear"], y=yr[col_name], name=str(year),
             line=dict(
@@ -496,11 +501,12 @@ elif view_mode == "Seasonality":
                 width=2.5 if year == current_year else 1.2,
             ),
             opacity=1.0 if year == current_year else 0.7,
+            hovertemplate="%{y:.1f}<extra>" + str(year) + "</extra>",
         ))
 
     style_fig(fig, f"{selected_product} {selected_tenor_season} Seasonality")
     fig.update_layout(xaxis=dict(tickvals=MONTH_TICKS, ticktext=MONTH_LABELS,
-                                  range=[1, 365], title=""))
+                                  range=[1, 365], title="", hoverformat=" "))
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown('<div class="section-div">Monthly Averages</div>', unsafe_allow_html=True)
@@ -530,13 +536,27 @@ elif view_mode == "Time Spreads":
                              line=dict(color=AMBER, width=1.5)), row=1, col=1)
     fig.add_trace(go.Scatter(x=df["Date"], y=df[back_col], name=back_tenor,
                              line=dict(color="#5B9CF6", width=1.5)), row=1, col=1)
-    fig.add_trace(go.Bar(x=df["Date"], y=spread, name="Spread",
-                         marker_color=[GREEN if v >= 0 else RED for v in spread],
-                         opacity=0.8), row=2, col=1)
-    fig.add_hline(y=0, line_dash="dot", line_color=TEXT_DIM, opacity=0.4, row=2, col=1)
+
+    # Use a filled area line for the spread so it's clearly visible at any scale
+    spread_clean = spread.dropna()
+    fig.add_trace(go.Scatter(
+        x=df["Date"], y=spread,
+        name="Spread",
+        line=dict(color=AMBER, width=1.5),
+        fill="tozeroy",
+        fillcolor=hex_to_rgba(GREEN, 0.15),
+    ), row=2, col=1)
+    fig.add_hline(y=0, line_dash="dot", line_color=TEXT_DIM, opacity=0.6, row=2, col=1)
+
     style_fig(fig, f"{spread_name} Spread", height=620)
     fig.update_yaxes(title_text="$/bbl", row=1, col=1)
-    fig.update_yaxes(title_text="Spread", row=2, col=1)
+
+    # Auto-range the spread panel with a small padding so it fills the panel
+    pad = max(spread_clean.abs().quantile(0.99) * 0.15, 0.05)
+    fig.update_yaxes(
+        title_text="Spread ($/bbl)", row=2, col=1,
+        range=[spread_clean.min() - pad, spread_clean.max() + pad],
+    )
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown('<div class="section-div">Spread Seasonality</div>', unsafe_allow_html=True)
@@ -546,11 +566,14 @@ elif view_mode == "Time Spreads":
 
     fig3 = go.Figure()
     for i, year in enumerate(sorted(sp["Year"].unique())[-5:]):
-        yr = sp[sp["Year"] == year].sort_values("Date")
-        fig3.add_trace(go.Scatter(x=yr["DayOfYear"], y=yr["Spread"], name=str(year),
-                                   line=dict(color=CHART_COLORS[i % len(CHART_COLORS)], width=1.3)))
+        yr = sp[sp["Year"] == year].drop_duplicates("DayOfYear").sort_values("Date")
+        fig3.add_trace(go.Scatter(
+            x=yr["DayOfYear"], y=yr["Spread"], name=str(year),
+            line=dict(color=CHART_COLORS[i % len(CHART_COLORS)], width=1.3),
+            hovertemplate="%{y:.2f}<extra>" + str(year) + "</extra>",
+        ))
     style_fig(fig3, f"{spread_name} Spread Seasonality", height=380)
-    fig3.update_layout(xaxis=dict(tickvals=MONTH_TICKS, ticktext=MONTH_LABELS, range=[1, 365]))
+    fig3.update_layout(xaxis=dict(tickvals=MONTH_TICKS, ticktext=MONTH_LABELS, range=[1, 365], hoverformat=" "))
     st.plotly_chart(fig3, use_container_width=True)
 
 # ═══ INTER-CRUDE SPREADS ═════════════════════════════════════════════════
@@ -563,20 +586,27 @@ elif view_mode == "Inter-Crude Spreads":
 
     crack      = df[col_a] - df[col_b]
     crack_name = f"{crude_a} vs {crude_b} ({spread_tenor})"
+    crack_clean = crack.dropna()
 
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        row_heights=[0.55, 0.45], vertical_spacing=0.06)
+                        row_heights=[0.6, 0.4], vertical_spacing=0.06)
     fig.add_trace(go.Scatter(x=df["Date"], y=df[col_a], name=crude_a,
                              line=dict(color=AMBER, width=1.5)), row=1, col=1)
     fig.add_trace(go.Scatter(x=df["Date"], y=df[col_b], name=crude_b,
                              line=dict(color="#5B9CF6", width=1.5)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df["Date"], y=crack, name="Spread",
-                             line=dict(color=GREEN, width=1.5),
-                             fill="tozeroy", fillcolor=hex_to_rgba(GREEN, 0.06)), row=2, col=1)
-    fig.add_hline(y=0, line_dash="dot", line_color=TEXT_DIM, opacity=0.4, row=2, col=1)
+    fig.add_trace(go.Scatter(
+        x=df["Date"], y=crack, name="Spread",
+        line=dict(color=AMBER, width=1.5),
+        fill="tozeroy", fillcolor=hex_to_rgba(GREEN, 0.15),
+    ), row=2, col=1)
+    fig.add_hline(y=0, line_dash="dot", line_color=TEXT_DIM, opacity=0.6, row=2, col=1)
     style_fig(fig, f"Inter-Crude: {crack_name}", height=620)
     fig.update_yaxes(title_text="$/bbl", row=1, col=1)
-    fig.update_yaxes(title_text="Spread", row=2, col=1)
+    pad = max(crack_clean.abs().quantile(0.99) * 0.15, 0.05)
+    fig.update_yaxes(
+        title_text="Spread ($/bbl)", row=2, col=1,
+        range=[crack_clean.min() - pad, crack_clean.max() + pad],
+    )
     st.plotly_chart(fig, use_container_width=True)
 
     st.markdown('<div class="section-div">Spread Seasonality</div>', unsafe_allow_html=True)
@@ -586,27 +616,41 @@ elif view_mode == "Inter-Crude Spreads":
 
     fig4 = go.Figure()
     years = sorted(ck["Year"].unique())[-5:]
+    current_year_ck = ck["Year"].max()
+    band_years_ck = sorted([y for y in years if y != current_year_ck])
     for i, year in enumerate(years):
-        yr = ck[ck["Year"] == year].sort_values("Date")
-        fig4.add_trace(go.Scatter(x=yr["DayOfYear"], y=yr["Spread"], name=str(year),
-                                   line=dict(color=CHART_COLORS[i % len(CHART_COLORS)], width=1.3)))
+        yr = ck[ck["Year"] == year].drop_duplicates("DayOfYear").sort_values("Date")
+        fig4.add_trace(go.Scatter(
+            x=yr["DayOfYear"], y=yr["Spread"], name=str(year),
+            line=dict(color=CHART_COLORS[i % len(CHART_COLORS)], width=1.3),
+            hovertemplate="%{y:.2f}<extra>" + str(year) + "</extra>",
+        ))
 
-    rng = ck[ck["Year"].isin(years)].copy()
-    agg = rng.groupby("DayOfYear")["Spread"].agg(["min","max"]).reset_index()
-    full_days = pd.DataFrame({"DayOfYear": range(1, 366)})
-    agg = full_days.merge(agg, on="DayOfYear", how="left")
-    agg["min"] = agg["min"].interpolate("linear").bfill().ffill()
-    agg["max"] = agg["max"].interpolate("linear").bfill().ffill()
-    x = agg["DayOfYear"].tolist()
+    rng = ck[ck["Year"].isin(band_years_ck)].copy()
+    year_frames_ck = []
+    for yr in band_years_ck:
+        yr_df = rng[rng["Year"] == yr][["DayOfYear", "Spread"]].copy()
+        yr_df = yr_df.drop_duplicates("DayOfYear").set_index("DayOfYear")
+        yr_df = yr_df.reindex(range(1, 366))
+        yr_df["Spread"] = yr_df["Spread"].interpolate("linear").bfill().ffill()
+        year_frames_ck.append(yr_df["Spread"].rename(yr))
+    grid_ck  = pd.concat(year_frames_ck, axis=1)
+    ck_min   = grid_ck.min(axis=1)
+    ck_max   = grid_ck.max(axis=1)
+    x = list(range(1, 366))
     fig4.add_trace(go.Scatter(
-        x=x + x[::-1],
-        y=agg["max"].tolist() + agg["min"].tolist()[::-1],
-        fill="toself", fillcolor="rgba(255,140,0,0.06)",
+        x=x, y=ck_min.tolist(),
+        line=dict(color="rgba(0,0,0,0)"), showlegend=False,
+        hoverinfo="skip", connectgaps=True,
+    ))
+    fig4.add_trace(go.Scatter(
+        x=x, y=ck_max.tolist(),
+        fill="tonexty", fillcolor="rgba(255,140,0,0.10)",
         line=dict(color="rgba(0,0,0,0)"), connectgaps=True,
-        name=f"{years[0]}–{years[-1]} Range", hoverinfo="skip",
+        name=f"{band_years_ck[0]}–{band_years_ck[-1]} Range", hoverinfo="skip",
     ))
     style_fig(fig4, f"Spread Seasonality: {crack_name}", height=400)
-    fig4.update_layout(xaxis=dict(tickvals=MONTH_TICKS, ticktext=MONTH_LABELS, range=[1, 365]))
+    fig4.update_layout(xaxis=dict(tickvals=MONTH_TICKS, ticktext=MONTH_LABELS, range=[1, 365], hoverformat=" "))
     st.plotly_chart(fig4, use_container_width=True)
 
 # ─── Footer ────────────────────────────────────────────────────────────────
